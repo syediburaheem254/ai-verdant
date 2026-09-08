@@ -17,6 +17,34 @@ from config import Config
 RANGES = Config.IDEAL_RANGES
 
 
+def ranges_from_crop_requirements(requirements):
+    """Convert a Crops-sheet row into the range format used by the analysis engine."""
+    if not requirements:
+        return RANGES
+
+    return {
+        "temperature_c": (
+            float(requirements["Temperature Min (°C)"]),
+            float(requirements["Temperature Max (°C)"]),
+        ),
+        "humidity_pct": (
+            float(requirements["Humidity Min (%)"]),
+            float(requirements["Humidity Max (%)"]),
+        ),
+        "soil_moisture_pct": (
+            float(requirements["Soil Moisture Min (%)"]),
+            float(requirements["Soil Moisture Max (%)"]),
+        ),
+        "ph": (
+            float(requirements["pH Min"]),
+            float(requirements["pH Max"]),
+        ),
+        "water_level_cm": (
+            float(requirements["Water Level Min (cm)"]),
+            float(requirements["Water Level Max (cm)"]),
+        ),
+    }
+
 def _score_metric(value, low, high):
     """Score 0-100: 100 = dead centre of ideal range, decays outside it."""
     if value is None:
