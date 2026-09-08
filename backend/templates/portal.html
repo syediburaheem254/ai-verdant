@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AI Verdant — Device Portal</title>
+<style>
+  :root{
+    --bg:#06090a; --panel:#0d1512; --line:#16261f;
+    --neon-green:#39ff88; --neon-cyan:#39e6ff; --neon-pink:#ff3df0;
+    --text:#eafff1; --muted:#7fa691;
+  }
+  *{box-sizing:border-box;}
+  body{
+    margin:0; min-height:100vh; background:var(--bg); color:var(--text);
+    font-family:'Segoe UI', system-ui, sans-serif; display:flex; align-items:center; justify-content:center; padding:24px;
+  }
+  .card{
+    width:100%; max-width:420px; background:var(--panel); border:1px solid var(--line);
+    border-radius:18px; padding:28px 24px; box-shadow:0 0 40px rgba(57,255,136,0.08);
+  }
+  .badge{ font-size:12px; letter-spacing:.08em; color:var(--neon-cyan); }
+  h1{ font-size:22px; margin:6px 0 2px; }
+  .sub{ color:var(--muted); font-size:14px; margin-bottom:20px; }
+  .reading{ display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-bottom:22px; }
+  .metric{ background:#0a1310; border:1px solid var(--line); border-radius:12px; padding:12px; }
+  .metric .label{ font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:.05em;}
+  .metric .value{ font-size:20px; font-weight:600; color:var(--neon-green); margin-top:4px; }
+  .empty{ color:var(--muted); font-size:14px; margin-bottom:20px; }
+  a.btn{
+    display:block; text-align:center; padding:14px; border-radius:12px; text-decoration:none;
+    font-weight:600; margin-bottom:10px;
+  }
+  .btn-primary{ background:linear-gradient(90deg,var(--neon-green),var(--neon-cyan)); color:#03130a; }
+  .btn-secondary{ border:1px solid var(--line); color:var(--text); }
+</style>
+</head>
+<body>
+  <div class="card">
+    <div class="badge">AI VERDANT · DEVICE PORTAL</div>
+    <h1>{{ device_id }}</h1>
+    <div class="sub">Scanned from the sensor box QR code.</div>
+
+    {% if reading %}
+    <div class="reading">
+      <div class="metric"><div class="label">Temp</div><div class="value">{{ reading.temperature_c }}°C</div></div>
+      <div class="metric"><div class="label">Humidity</div><div class="value">{{ reading.humidity_pct }}%</div></div>
+      <div class="metric"><div class="label">Soil Moisture</div><div class="value">{{ reading.soil_moisture_pct }}%</div></div>
+      <div class="metric"><div class="label">pH</div><div class="value">{{ reading.ph }}</div></div>
+    </div>
+    {% else %}
+    <div class="empty">No readings received from this device yet. Once it transmits data, it'll show up here automatically.</div>
+    {% endif %}
+
+    <a class="btn btn-primary" href="{{ app_url }}">Open full dashboard →</a>
+    <a class="btn btn-secondary" href="javascript:location.reload()">Refresh reading</a>
+  </div>
+</body>
+</html>

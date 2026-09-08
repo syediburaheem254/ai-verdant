@@ -1,0 +1,16 @@
+{
+  "name": "AI Verdant",
+  "short_name": "AI Verdant",
+  "description": "Live farm intelligence — sensor scoring, trends, and optimal care strategy.",
+  "start_url": "index.html",
+  "scope": ".",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#06090a",
+  "theme_color": "#06090a",
+  "icons": [
+    { "src": "assets/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "assets/icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "assets/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AI Verdant — Settings</title>
+<link rel="stylesheet" href="css/theme.css">
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#06090a">
+<link rel="apple-touch-icon" href="assets/icon-192.png">
+</head>
+<body>
+<div class="app-shell">
+  <aside class="sidebar" id="aiv-sidebar"></aside>
+  <main class="main">
+    <div class="page-header">
+      <div class="eyebrow">Connection & devices</div>
+      <div class="page-title">Settings</div>
+      <p class="page-desc">Point this app at your backend, and manage which sensor box you're viewing.</p>
+    </div>
+
+    <div class="grid grid-2" style="align-items:start;">
+      <div class="card">
+        <div class="metric-label" style="margin-bottom:10px;">Backend API URL</div>
+        <p style="font-size:13px; color:var(--muted); margin-bottom:12px; line-height:1.5;">
+          This is the address of your Flask backend (see <code>backend/app.py</code>). Use
+          <code>http://localhost:5000</code> for local development, or your deployed URL / ngrok tunnel.
+        </p>
+        <input id="aiv-api-input" type="text" style="width:100%; background:var(--bg-void); border:1px solid var(--line); border-radius:var(--radius-sm); padding:11px; color:var(--text); font-family:var(--font-body); margin-bottom:12px;">
+        <button class="btn btn-primary" id="aiv-save-api">Save & reconnect</button>
+      </div>
+
+      <div class="card">
+        <div class="metric-label" style="margin-bottom:10px;">Registered devices</div>
+        <div id="aiv-device-list">Loading…</div>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:16px;">
+      <div class="metric-label" style="margin-bottom:10px;">How data gets here</div>
+      <p style="font-size:14px; color:var(--text-dim); line-height:1.7;">
+        1. The sensor box (ESP32/Arduino + humidity &amp; temperature, ultrasonic, pH, motion, and soil
+        moisture sensors) reads all five sensors and POSTs them to <code>/api/ingest</code> on your backend.<br>
+        2. The backend scores the reading, saves it locally, mirrors it to your Google Sheet, and
+        generates recommendations.<br>
+        3. The QR code sticker on the box links to <code>/portal/&lt;device_id&gt;</code> — scanning it shows
+        the latest reading and a button into this dashboard.
+      </p>
+    </div>
+  </main>
+</div>
+
+<script src="js/api.js"></script>
+<script src="js/ui.js"></script>
+<script>
+async function main() {
+  await AIV.renderShell();
+  document.getElementById("aiv-api-input").value = AIV.API_BASE_URL;
+  document.getElementById("aiv-save-api").addEventListener("click", () => {
+    AIV.setApiBase(document.getElementById("aiv-api-input").value.trim());
+    window.location.reload();
+  });
+
+  try {
+    const devices = await AIV.api.listDevices();
+    const listEl = document.getElementById("aiv-device-list");
+    if (!devices.length) {
+      listEl.innerHTML = AIV.emptyState("No devices have reported in yet.");
+      return;
+    }
+    listEl.innerHTML = devices.map((d) => `
+      <div class="rec-row">
+        <div class="rec-body">
+          <div class="rec-msg">${d.name} <span style="color:var(--muted); font-weight:400;">(${d.device_id})</span></div>
+          <div class="rec-strategy">${d.farm_name || ""} ${d.location ? "· " + d.location : ""} ${d.crop_type ? "· " + d.crop_type : ""}</div>
+        </div>
+        <a class="btn" href="index.html?device=${d.device_id}">View</a>
+      </div>
+    `).join("");
+  } catch (e) {
+    document.getElementById("aiv-device-list").innerHTML = AIV.emptyState(`Couldn't reach backend (${e.message}).`);
+  }
+}
+main();
+</script>
+</body>
+</html>

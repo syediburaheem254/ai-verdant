@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AI Verdant — Dashboard</title>
+<link rel="stylesheet" href="css/theme.css">
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#06090a">
+<link rel="apple-touch-icon" href="assets/icon-192.png">
+</head>
+<body>
+<div class="app-shell">
+  <aside class="sidebar" id="aiv-sidebar"></aside>
+  <main class="main">
+    <div class="page-header">
+      <div class="eyebrow">Live overview</div>
+      <div class="page-title">Farm Dashboard</div>
+      <p class="page-desc">Real-time snapshot of your field conditions, pulled straight from the sensor node the moment it syncs.</p>
+    </div>
+
+    <div id="aiv-content">
+      <div class="card" style="margin-bottom:20px;">Loading latest reading…</div>
+    </div>
+
+    <footer class="page-footer">AI Verdant · connected to <span id="aiv-api-url"></span></footer>
+  </main>
+</div>
+
+<script src="js/api.js"></script>
+<script src="js/ui.js"></script>
+<script>
+async function main() {
+  await AIV.renderShell();
+  document.getElementById("aiv-api-url").textContent = AIV.API_BASE_URL;
+  const deviceId = AIV.getDeviceId();
+  const content = document.getElementById("aiv-content");
+
+  try {
+    const [latest, recs] = await Promise.all([
+      AIV.api.latest(deviceId),
+      AIV.api.recommendations(deviceId),
+    ]);
+
+    const { reading, scores, overall_score, explanations } = latest;
+    const metaKeys = ["temperature_c", "humidity_pct", "soil_moisture_pct", "ph", "water_level_cm"];
+
+    const metricCards = metaKeys.map((key) => {
+      const meta = AIV.SENSOR_META[key];
+      const value = reading[key];
+      const score = scores[key];
+      const color = AIV.scoreColor(score);
+      const pct = score === null || score === undefined ? 0 : score;
+      const rangeText = meta.range ? `Ideal ${meta.range[0]}–${meta.range[1]}${meta.unit}` : "";
+      return `
+        <div class="card metric-card glow-green">
+          <div class="metric-label">${meta.icon} ${meta.label}</div>
+          <div class="metric-value">${value !== null && value !== undefined ? value : "—"}<span class="metric-unit">${meta.unit}</span></div>
+          <div class="metric-range">${rangeText}</div>
+          <div class="metric-bar"><div class="metric-bar-fill" style="width:${pct}%; background:${color}"></div></div>
+        </div>`;
+    }).join("");
+
+    const topRecs = recs.slice(0, 3).map((r) => `
+      <div class="rec-row">
+        <div class="rec-body">
+          <div class="rec-msg">${AIV.severityBadge(r.severity)} &nbsp;${r.message}</div>
+          <div class="rec-strategy">${r.strategy}</div>
+        </div>
+      </div>`).join("");
+
+    content.innerHTML = `
+      <div class="grid grid-2" style="margin-bottom:16px;">
+        <div class="card glow-cyan">
+          <div class="metric-label" style="margin-bottom:14px;">Overall Condition Score</div>
+          <div class="score-hero">
+            <div class="score-ring" id="aiv-score-ring"></div>
+            <div>
+              <div style="font-size:14.5px; color:var(--text-dim); line-height:1.6;">
+                Last reading: <strong>${AIV.formatTime(reading.timestamp)}</strong><br>
+                ${reading.motion_detected ? "Motion was detected at the last check-in." : "No motion detected at the last check-in."}
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="metric-label" style="margin-bottom:10px;">What's happening right now</div>
+          <div class="explain-list">
+            ${explanations.slice(0, 3).map((e) => `<div class="explain-item"><span class="dot-lead"></span>${e}</div>`).join("")}
+          </div>
+        </div>
+      </div>
+
+      <div class="grid grid-4" style="margin-bottom:16px;">${metricCards}</div>
+
+      <div class="card">
+        <div class="metric-label" style="margin-bottom:6px;">Top recommendations</div>
+        ${topRecs || AIV.emptyState("No recommendations yet.")}
+        <div style="margin-top:14px;"><a href="strategy.html${window.location.search}" class="btn btn-primary">View full strategy →</a></div>
+      </div>
+    `;
+    AIV.renderScoreRing("aiv-score-ring", overall_score);
+  } catch (e) {
+    content.innerHTML = AIV.emptyState(
+      `Couldn't load data for "${deviceId}" (${e.message}). Make sure the backend is running and the API URL in Settings is correct, and that the sensor box has sent at least one reading.`
+    );
+  }
+}
+main();
+</script>
+</body>
+</html>

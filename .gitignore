@@ -1,0 +1,8 @@
+backend/.env
+backend/service_account.json
+backend/data/*.db
+backend/venv/
+__pycache__/
+*.pyc
+*-qr.png
+.DS_Store
