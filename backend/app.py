@@ -155,6 +155,15 @@ def portal(device_id):
 def healthz():
     return jsonify({"status": "healthy", "time": datetime.utcnow().isoformat()})
 
+@app.route("/api/test-crop/<crop_name>", methods=["GET"])
+def test_crop(crop_name):
+    requirements = sheets.get_crop_requirements(crop_name)
+
+    if requirements is None:
+        return jsonify({"error": f"crop '{crop_name}' not found"}), 404
+
+    return jsonify(requirements)
+
 
 if __name__ == "__main__":
     app.run(host=Config.HOST, port=Config.PORT, debug=Config.DEBUG)
