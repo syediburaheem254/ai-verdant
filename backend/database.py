@@ -90,17 +90,42 @@ def upsert_device(device_id, name=None, farm_name=None, location=None, crop_type
         existing = conn.execute(
             "SELECT * FROM devices WHERE device_id = ?", (device_id,)
         ).fetchone()
+
         now = datetime.utcnow().isoformat()
+
         if existing:
             conn.execute(
-                "UPDATE devices SET last_seen = ? WHERE device_id = ?", (now, device_id)
+                """UPDATE devices
+                   SET name = COALESCE(?, name),
+                       farm_name = COALESCE(?, farm_name),
+                       location = COALESCE(?, location),
+                       crop_type = COALESCE(?, crop_type),
+                       last_seen = ?
+                   WHERE device_id = ?""",
+                (
+                    name,
+                    farm_name,
+                    location,
+                    crop_type,
+                    now,
+                    device_id,
+                ),
             )
+
         else:
             conn.execute(
                 """INSERT INTO devices
                    (device_id, name, farm_name, location, crop_type, created_at, last_seen)
                    VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                (device_id, name or device_id, farm_name, location, crop_type, now, now),
+                (
+                    device_id,
+                    name or device_id,
+                    farm_name,
+                    location,
+                    crop_type,
+                    now,
+                    now,
+                ),
             )
 
 
