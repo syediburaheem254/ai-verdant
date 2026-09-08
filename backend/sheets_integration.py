@@ -114,3 +114,30 @@ def push_reading(device_id, data, overall_score):
     except Exception as e:
         logger.warning("Failed to push reading to Google Sheets: %s", e)
         return False
+
+
+def get_crop_requirements(crop_name):
+    """Reads one crop's requirements from the Crops worksheet."""
+    client = _get_client()
+    if client is None:
+        return None
+
+    try:
+        if Config.GOOGLE_SHEET_ID:
+            spreadsheet = client.open_by_key(Config.GOOGLE_SHEET_ID)
+        else:
+            spreadsheet = client.open(Config.GOOGLE_SHEET_NAME)
+
+        worksheet = spreadsheet.worksheet("Crops")
+        rows = worksheet.get_all_records()
+
+        for row in rows:
+            if str(row.get("Crop Name", "")).strip().lower() == str(crop_name).strip().lower():
+                return row
+
+        logger.warning("Crop '%s' was not found in the Crops sheet.", crop_name)
+        return None
+
+    except Exception as e:
+        logger.warning("Could not read crop requirements: %s", e)
+        return None
