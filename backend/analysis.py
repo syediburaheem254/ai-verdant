@@ -2,253 +2,740 @@
 AI Verdant — Analysis Engine
 
 Turns raw sensor numbers into:
-  1. A 0-100 score per metric + one overall condition score
-  2. Plain-English explanations of what's happening and why
-  3. Ranked recommendations (info / watch / action / urgent)
-  4. One consolidated "optimal strategy" for the current conditions
+    1. A 0-100 score per metric + one overall condition score
+    2. Plain-English explanations of what's happening and why
+    3. Ranked recommendations (info / watch / action / urgent)
+    4. One consolidated "optimal strategy" for the current conditions
+
+The engine is crop-specific when crop requirements are supplied from
+Google Sheets. If no crop requirements are available, it falls back
+to the default ranges defined in Config.IDEAL_RANGES.
 
 This is intentionally rule-based (transparent, explainable, works with
 zero external dependencies) rather than a black-box model — a farmer
-needs to trust *why* the app is telling them something.
+needs to trust why the app is telling them something.
 """
 
 from config import Config
 
+
+# -------------------------------------------------------------------
+# DEFAULT FALLBACK RANGES
+# -------------------------------------------------------------------
+
 RANGES = Config.IDEAL_RANGES
 
 
+# -------------------------------------------------------------------
+# CROP REQUIREMENT CONVERSION
+# -------------------------------------------------------------------
+
 def ranges_from_crop_requirements(requirements):
-    """Convert a Crops-sheet row into the range format used by the analysis engine."""
+    """
+    Convert one row from the Google Sheets 'Crops' worksheet into
+    the range format used by the analysis engine.
+
+    Expected keys:
+        Temperature Min (°C)
+        Temperature Max (°C)
+        Humidity Min (%)
+        Humidity Max (%)
+        Soil Moisture Min (%)
+        Soil Moisture Max (%)
+        pH Min
+        pH Max
+        Water Level Min (cm)
+        Water Level Max (cm)
+
+    If requirements are missing, the default Config ranges are returned.
+    """
+
     if not requirements:
         return RANGES
 
-    return {
-        "temperature_c": (
-            float(requirements["Temperature Min (°C)"]),
-            float(requirements["Temperature Max (°C)"]),
-        ),
-        "humidity_pct": (
-            float(requirements["Humidity Min (%)"]),
-            float(requirements["Humidity Max (%)"]),
-        ),
-        "soil_moisture_pct": (
-            float(requirements["Soil Moisture Min (%)"]),
-            float(requirements["Soil Moisture Max (%)"]),
-        ),
-        "ph": (
-            float(requirements["pH Min"]),
-            float(requirements["pH Max"]),
-        ),
-        "water_level_cm": (
-            float(requirements["Water Level Min (cm)"]),
-            float(requirements["Water Level Max (cm)"]),
-        ),
-    }
+    try:
+        return {
+            "temperature_c": (
+                float(requirements["Temperature Min (°C)"]),
+                float(requirements["Temperature Max (°C)"]),
+            ),
+            "humidity_pct": (
+                float(requirements["Humidity Min (%)"]),
+                float(requirements["Humidity Max (%)"]),
+            ),
+            "soil_moisture_pct": (
+                float(requirements["Soil Moisture Min (%)"]),
+                float(requirements["Soil Moisture Max (%)"]),
+            ),
+            "ph": (
+                float(requirements["pH Min"]),
+                float(requirements["pH Max"]),
+            ),
+            "water_level_cm": (
+                float(requirements["Water Level Min (cm)"]),
+                float(requirements["Water Level Max (cm)"]),
+            ),
+        }
+
+    except (KeyError, TypeError, ValueError):
+        # If the sheet row is incomplete or malformed, safely fall back
+        # to the default ranges instead of crashing the backend.
+        return RANGES
+
+
+# -------------------------------------------------------------------
+# INDIVIDUAL METRIC SCORING
+# -------------------------------------------------------------------
 
 def _score_metric(value, low, high):
-    """Score 0-100: 100 = dead centre of ideal range, decays outside it."""
+    """
+    Score one sensor metric from 0-100.
+
+    100 = exactly at the centre of the ideal range.
+
+    Inside the ideal range:
+        score gradually decreases from 100 toward 85.
+
+    Outside the ideal range:
+        score decreases more strongly based on distance from
+        the acceptable range.
+    """
+
     if value is None:
         return None
+
+    try:
+        value = float(value)
+        low = float(low)
+        high = float(high)
+    except (TypeError, ValueError):
+        return None
+
+    # Protect against invalid ranges.
+    if high < low:
+        low, high = high, low
+
     mid = (low + high) / 2
     half_width = (high - low) / 2
+
+    # If low == high, there is no meaningful range width.
+    if half_width == 0:
+        return 100.0 if value == low else 0.0
+
     if low <= value <= high:
-        # Inside range: 85-100, peaking at the midpoint
-        distance_from_mid = abs(value - mid) / half_width if half_width else 0
+        # Inside range: 85-100, peaking at midpoint.
+        distance_from_mid = abs(value - mid) / half_width
         return round(100 - (distance_from_mid * 15), 1)
-    # Outside range: decays further the further out it is
+
+    # Outside range: decay as distance increases.
     distance_outside = abs(value - (low if value < low else high))
-    penalty = min(distance_outside / half_width * 40, 85)
+
+    penalty = min(
+        distance_outside / half_width * 40,
+        85,
+    )
+
     return round(max(85 - penalty, 0), 1)
 
 
-def score_reading(data):
-    """Returns per-metric scores (0-100) and the overall score."""
-    scores = {}
-    if data.get("temperature_c") is not None:
-        scores["temperature_c"] = _score_metric(data["temperature_c"], *RANGES["temperature_c"])
-    if data.get("humidity_pct") is not None:
-        scores["humidity_pct"] = _score_metric(data["humidity_pct"], *RANGES["humidity_pct"])
-    if data.get("soil_moisture_pct") is not None:
-        scores["soil_moisture_pct"] = _score_metric(data["soil_moisture_pct"], *RANGES["soil_moisture_pct"])
-    if data.get("ph") is not None:
-        scores["ph"] = _score_metric(data["ph"], *RANGES["ph"])
-    if data.get("water_level_cm") is not None:
-        scores["water_level_cm"] = _score_metric(data["water_level_cm"], *RANGES["water_level_cm"])
+# -------------------------------------------------------------------
+# OVERALL SENSOR SCORING
+# -------------------------------------------------------------------
 
-    valid = [v for v in scores.values() if v is not None]
-    overall = round(sum(valid) / len(valid), 1) if valid else None
+def score_reading(data, ranges=None):
+    """
+    Return:
+        scores  -> dictionary containing per-metric scores
+        overall -> average score across available metrics
+
+    'ranges' should normally come from the selected crop's
+    requirements in Google Sheets.
+
+    If ranges is not supplied, the default Config ranges are used.
+    """
+
+    ranges = ranges or RANGES
+
+    scores = {}
+
+    # Temperature
+    if data.get("temperature_c") is not None:
+        scores["temperature_c"] = _score_metric(
+            data["temperature_c"],
+            *ranges["temperature_c"],
+        )
+
+    # Humidity
+    if data.get("humidity_pct") is not None:
+        scores["humidity_pct"] = _score_metric(
+            data["humidity_pct"],
+            *ranges["humidity_pct"],
+        )
+
+    # Soil moisture
+    if data.get("soil_moisture_pct") is not None:
+        scores["soil_moisture_pct"] = _score_metric(
+            data["soil_moisture_pct"],
+            *ranges["soil_moisture_pct"],
+        )
+
+    # pH
+    if data.get("ph") is not None:
+        scores["ph"] = _score_metric(
+            data["ph"],
+            *ranges["ph"],
+        )
+
+    # Water level
+    if data.get("water_level_cm") is not None:
+        scores["water_level_cm"] = _score_metric(
+            data["water_level_cm"],
+            *ranges["water_level_cm"],
+        )
+
+    # Calculate overall score only from valid metrics.
+    valid = [
+        value
+        for value in scores.values()
+        if value is not None
+    ]
+
+    overall = (
+        round(sum(valid) / len(valid), 1)
+        if valid
+        else None
+    )
+
     return scores, overall
 
 
-def explain_reading(data, scores):
-    """Plain-English, per-metric explanation of the current state."""
+# -------------------------------------------------------------------
+# PLAIN-ENGLISH EXPLANATIONS
+# -------------------------------------------------------------------
+
+def explain_reading(data, scores, ranges=None):
+    """
+    Generate plain-English explanations for the current sensor state.
+
+    The explanation uses the selected crop's requirements when
+    'ranges' is supplied.
+    """
+
+    ranges = ranges or RANGES
+
     explanations = []
 
-    t = data.get("temperature_c")
-    if t is not None:
-        low, high = RANGES["temperature_c"]
-        if t < low:
-            explanations.append(f"Temperature is {t}°C, below the {low}-{high}°C comfort zone — plant growth may slow and root uptake weakens in cold soil.")
-        elif t > high:
-            explanations.append(f"Temperature is {t}°C, above the {low}-{high}°C comfort zone — expect faster water loss and heat stress on leaves.")
-        else:
-            explanations.append(f"Temperature is {t}°C, comfortably inside the {low}-{high}°C ideal range.")
+    # ---------------------------------------------------------------
+    # Temperature
+    # ---------------------------------------------------------------
 
-    h = data.get("humidity_pct")
-    if h is not None:
-        low, high = RANGES["humidity_pct"]
-        if h < low:
-            explanations.append(f"Humidity is {h}%, drier than the {low}-{high}% target — plants lose moisture faster than roots can replace it.")
-        elif h > high:
-            explanations.append(f"Humidity is {h}%, above the {low}-{high}% target — this raises fungal disease risk.")
-        else:
-            explanations.append(f"Humidity is {h}%, within the healthy {low}-{high}% range.")
+    temperature = data.get("temperature_c")
 
-    sm = data.get("soil_moisture_pct")
-    if sm is not None:
-        low, high = RANGES["soil_moisture_pct"]
-        if sm < low:
-            explanations.append(f"Soil moisture is {sm}%, below {low}% — the root zone is drying out, irrigation is likely needed soon.")
-        elif sm > high:
-            explanations.append(f"Soil moisture is {sm}%, above {high}% — soil may be waterlogged, risking root rot and oxygen starvation.")
+    if temperature is not None:
+        low, high = ranges["temperature_c"]
+
+        if temperature < low:
+            explanations.append(
+                f"Temperature is {temperature}°C, below the "
+                f"{low}-{high}°C comfort zone — plant growth may "
+                f"slow and root uptake can weaken in cold conditions."
+            )
+
+        elif temperature > high:
+            explanations.append(
+                f"Temperature is {temperature}°C, above the "
+                f"{low}-{high}°C comfort zone — expect faster "
+                f"water loss and increased heat stress."
+            )
+
         else:
-            explanations.append(f"Soil moisture is {sm}%, sitting well in the {low}-{high}% target band.")
+            explanations.append(
+                f"Temperature is {temperature}°C, comfortably inside "
+                f"the {low}-{high}°C ideal range."
+            )
+
+    # ---------------------------------------------------------------
+    # Humidity
+    # ---------------------------------------------------------------
+
+    humidity = data.get("humidity_pct")
+
+    if humidity is not None:
+        low, high = ranges["humidity_pct"]
+
+        if humidity < low:
+            explanations.append(
+                f"Humidity is {humidity}%, below the {low}-{high}% "
+                f"target — plants may lose moisture faster than "
+                f"roots can replace it."
+            )
+
+        elif humidity > high:
+            explanations.append(
+                f"Humidity is {humidity}%, above the {low}-{high}% "
+                f"target — this can increase fungal disease risk."
+            )
+
+        else:
+            explanations.append(
+                f"Humidity is {humidity}%, within the healthy "
+                f"{low}-{high}% range."
+            )
+
+    # ---------------------------------------------------------------
+    # Soil Moisture
+    # ---------------------------------------------------------------
+
+    soil_moisture = data.get("soil_moisture_pct")
+
+    if soil_moisture is not None:
+        low, high = ranges["soil_moisture_pct"]
+
+        if soil_moisture < low:
+            explanations.append(
+                f"Soil moisture is {soil_moisture}%, below {low}% — "
+                f"the root zone is drying out and irrigation may "
+                f"be needed soon."
+            )
+
+        elif soil_moisture > high:
+            explanations.append(
+                f"Soil moisture is {soil_moisture}%, above {high}% — "
+                f"the soil may be excessively wet, increasing the "
+                f"risk of root problems and poor oxygen availability."
+            )
+
+        else:
+            explanations.append(
+                f"Soil moisture is {soil_moisture}%, sitting within "
+                f"the {low}-{high}% target band."
+            )
+
+    # ---------------------------------------------------------------
+    # pH
+    # ---------------------------------------------------------------
 
     ph = data.get("ph")
-    if ph is not None:
-        low, high = RANGES["ph"]
-        if ph < low:
-            explanations.append(f"Soil pH is {ph}, more acidic than the {low}-{high} target — nutrient uptake (especially phosphorus) can be restricted.")
-        elif ph > high:
-            explanations.append(f"Soil pH is {ph}, more alkaline than the {low}-{high} target — iron and manganese may become less available to plants.")
-        else:
-            explanations.append(f"Soil pH is {ph}, in the ideal {low}-{high} band for most crops.")
 
-    wl = data.get("water_level_cm")
-    if wl is not None:
-        explanations.append(f"Ultrasonic sensor reads {wl} cm — used to track tank level / canopy height / obstruction distance depending on your mounting.")
+    if ph is not None:
+        low, high = ranges["ph"]
+
+        if ph < low:
+            explanations.append(
+                f"Soil pH is {ph}, below the {low}-{high} target — "
+                f"nutrient availability may be affected."
+            )
+
+        elif ph > high:
+            explanations.append(
+                f"Soil pH is {ph}, above the {low}-{high} target — "
+                f"some nutrients may become less available to plants."
+            )
+
+        else:
+            explanations.append(
+                f"Soil pH is {ph}, inside the ideal {low}-{high} band."
+            )
+
+    # ---------------------------------------------------------------
+    # Water Level
+    # ---------------------------------------------------------------
+
+    water_level = data.get("water_level_cm")
+
+    if water_level is not None:
+        low, high = ranges["water_level_cm"]
+
+        if water_level < low:
+            explanations.append(
+                f"Water level is {water_level} cm, below the "
+                f"{low}-{high} cm target range."
+            )
+
+        elif water_level > high:
+            explanations.append(
+                f"Water level is {water_level} cm, above the "
+                f"{low}-{high} cm target range."
+            )
+
+        else:
+            explanations.append(
+                f"Water level is {water_level} cm, within the "
+                f"{low}-{high} cm target range."
+            )
+
+    # ---------------------------------------------------------------
+    # Motion
+    # ---------------------------------------------------------------
 
     if data.get("motion_detected"):
-        explanations.append("Motion was detected near the field node — could be an animal intrusion or a person on-site; review the timing against expected activity.")
+        explanations.append(
+            "Motion was detected near the field node — this could "
+            "indicate an animal intrusion or a person on-site; "
+            "review the timing against expected activity."
+        )
 
     return explanations
 
 
-def generate_recommendations(data, scores, history=None):
+# -------------------------------------------------------------------
+# RECOMMENDATION ENGINE
+# -------------------------------------------------------------------
+
+def generate_recommendations(
+    data,
+    scores,
+    history=None,
+    ranges=None,
+):
     """
-    Returns a list of dicts: {category, severity, message, strategy}
-    severity in: info | watch | action | urgent
+    Return a list of recommendation dictionaries.
+
+    Each recommendation has:
+
+        {
+            "category": "...",
+            "severity": "...",
+            "message": "...",
+            "strategy": "..."
+        }
+
+    Severity levels:
+        info
+        watch
+        action
+        urgent
+
+    The thresholds are calculated against the selected crop's
+    requirements when 'ranges' is supplied.
     """
+
+    ranges = ranges or RANGES
+
     recs = []
 
     def add(category, severity, message, strategy):
-        recs.append({"category": category, "severity": severity, "message": message, "strategy": strategy})
+        recs.append(
+            {
+                "category": category,
+                "severity": severity,
+                "message": message,
+                "strategy": strategy,
+            }
+        )
 
-    sm = data.get("soil_moisture_pct")
-    if sm is not None:
-        low, high = RANGES["soil_moisture_pct"]
-        if sm < low - 10:
-            add("irrigation", "urgent",
-                "Soil moisture critically low.",
-                "Irrigate now for 15-20 minutes with drip or sprinkler, then re-check moisture in 2 hours before deciding on a second cycle.")
-        elif sm < low:
-            add("irrigation", "action",
-                "Soil moisture trending low.",
-                "Schedule a light watering session within the next few hours, ideally early morning or evening to reduce evaporation loss.")
-        elif sm > high + 10:
-            add("irrigation", "urgent",
-                "Soil is waterlogged.",
-                "Pause irrigation entirely, improve drainage if possible, and avoid heavy foot or machine traffic on saturated soil.")
-        elif sm > high:
-            add("irrigation", "watch",
-                "Soil moisture slightly high.",
-                "Hold off on the next scheduled watering and let the top layer dry before irrigating again.")
+    # ---------------------------------------------------------------
+    # Soil Moisture / Irrigation
+    # ---------------------------------------------------------------
 
-    t = data.get("temperature_c")
-    if t is not None:
-        low, high = RANGES["temperature_c"]
-        if t > high + 5:
-            add("heat_stress", "urgent",
-                "Heat stress risk is high.",
-                "Provide shade netting during peak sun hours (11am-3pm) and increase irrigation frequency slightly to offset faster evapotranspiration.")
-        elif t > high:
-            add("heat_stress", "watch",
-                "Temperatures are running warm.",
-                "Monitor for wilting during the afternoon; consider mulching to keep root-zone temperatures stable.")
-        elif t < low:
-            add("cold_stress", "action",
-                "Temperatures are below the comfort zone.",
-                "Use row covers overnight if a cold snap is expected, and delay any transplanting until temperatures recover.")
+    soil_moisture = data.get("soil_moisture_pct")
 
-    h = data.get("humidity_pct")
-    if h is not None:
-        low, high = RANGES["humidity_pct"]
-        if h > high + 10:
-            add("disease_risk", "action",
-                "High humidity raises fungal disease risk.",
-                "Improve airflow by pruning dense foliage and avoid overhead watering; consider a preventive organic fungicide if this persists 2+ days.")
-        elif h < low - 10:
-            add("water_stress", "watch",
-                "Very low humidity increases plant water stress.",
-                "Increase watering frequency slightly and consider light misting during the hottest part of the day.")
+    if soil_moisture is not None:
+        low, high = ranges["soil_moisture_pct"]
+
+        if soil_moisture < low - 10:
+            add(
+                "irrigation",
+                "urgent",
+                "Soil moisture is critically low for this crop.",
+                "Irrigate now according to the crop's water requirement, "
+                "then re-check soil moisture before starting another cycle.",
+            )
+
+        elif soil_moisture < low:
+            add(
+                "irrigation",
+                "action",
+                "Soil moisture is below the preferred range for this crop.",
+                "Schedule a light watering session within the next few "
+                "hours, preferably during cooler parts of the day to "
+                "reduce evaporation loss.",
+            )
+
+        elif soil_moisture > high + 10:
+            add(
+                "irrigation",
+                "urgent",
+                "Soil moisture is far above the preferred range for this crop.",
+                "Pause irrigation, improve drainage if possible, and "
+                "allow the root zone to recover before watering again.",
+            )
+
+        elif soil_moisture > high:
+            add(
+                "irrigation",
+                "watch",
+                "Soil moisture is above the preferred range for this crop.",
+                "Hold off on the next scheduled watering and monitor "
+                "the soil until moisture returns toward the target range.",
+            )
+
+    # ---------------------------------------------------------------
+    # Temperature
+    # ---------------------------------------------------------------
+
+    temperature = data.get("temperature_c")
+
+    if temperature is not None:
+        low, high = ranges["temperature_c"]
+
+        if temperature > high + 5:
+            add(
+                "heat_stress",
+                "urgent",
+                "Temperature is significantly above this crop's preferred range.",
+                "Provide shade or cooling during peak heat and monitor "
+                "soil moisture because water loss can increase rapidly.",
+            )
+
+        elif temperature > high:
+            add(
+                "heat_stress",
+                "watch",
+                "Temperature is above this crop's preferred range.",
+                "Monitor the crop for wilting or heat stress and consider "
+                "mulching or shade during the hottest part of the day.",
+            )
+
+        elif temperature < low:
+            add(
+                "cold_stress",
+                "action",
+                "Temperature is below this crop's preferred range.",
+                "Protect the crop from cold conditions where practical "
+                "and monitor the temperature until it returns toward "
+                "the preferred range.",
+            )
+
+    # ---------------------------------------------------------------
+    # Humidity
+    # ---------------------------------------------------------------
+
+    humidity = data.get("humidity_pct")
+
+    if humidity is not None:
+        low, high = ranges["humidity_pct"]
+
+        if humidity > high + 10:
+            add(
+                "disease_risk",
+                "action",
+                "Humidity is significantly above this crop's preferred range.",
+                "Improve airflow around the crop, avoid unnecessary "
+                "overhead watering, and monitor closely for fungal disease.",
+            )
+
+        elif humidity < low - 10:
+            add(
+                "water_stress",
+                "watch",
+                "Humidity is significantly below this crop's preferred range.",
+                "Monitor the crop for water stress and adjust irrigation "
+                "carefully if soil moisture is also falling.",
+            )
+
+    # ---------------------------------------------------------------
+    # pH
+    # ---------------------------------------------------------------
 
     ph = data.get("ph")
+
     if ph is not None:
-        low, high = RANGES["ph"]
+        low, high = ranges["ph"]
+
         if ph < low:
-            add("soil_chemistry", "action",
-                "Soil is more acidic than ideal.",
-                "Apply agricultural lime at a rate matched to your soil test, and re-test pH in 2-3 weeks before applying more.")
+            add(
+                "soil_chemistry",
+                "action",
+                "Soil pH is below this crop's preferred range.",
+                "Consider a suitable soil amendment based on a proper "
+                "soil test, then re-test the pH before applying additional "
+                "amendments.",
+            )
+
         elif ph > high:
-            add("soil_chemistry", "action",
-                "Soil is more alkaline than ideal.",
-                "Apply elemental sulfur or an acidifying organic compost, and re-test pH in 2-3 weeks.")
+            add(
+                "soil_chemistry",
+                "action",
+                "Soil pH is above this crop's preferred range.",
+                "Consider a suitable soil amendment based on a proper "
+                "soil test, then re-test the pH before applying additional "
+                "amendments.",
+            )
+
+    # ---------------------------------------------------------------
+    # Water Level
+    # ---------------------------------------------------------------
+
+    water_level = data.get("water_level_cm")
+
+    if water_level is not None:
+        low, high = ranges["water_level_cm"]
+
+        if water_level < low:
+            add(
+                "water_supply",
+                "critical" if water_level < low - 10 else "action",
+                "Water level is below the preferred range for this crop.",
+                "Inspect the water supply and replenish it if necessary. "
+                "Continue monitoring before the next irrigation cycle.",
+            )
+
+        elif water_level > high:
+            add(
+                "water_supply",
+                "watch",
+                "Water level is above the preferred range.",
+                "Monitor the water source and drainage system and make "
+                "sure excess water is not creating a field or tank problem.",
+            )
+
+    # ---------------------------------------------------------------
+    # Motion / Security
+    # ---------------------------------------------------------------
 
     if data.get("motion_detected"):
-        add("security", "watch",
+        add(
+            "security",
+            "watch",
             "Motion detected at the sensor node.",
-            "Check the field camera or walk the perimeter — could be wildlife intrusion; consider a fence check if this repeats overnight.")
+            "Check the field camera or inspect the area when practical. "
+            "If motion repeatedly occurs at unexpected times, inspect "
+            "the perimeter for possible animal intrusion.",
+        )
+
+    # ---------------------------------------------------------------
+    # No Problems
+    # ---------------------------------------------------------------
 
     if not recs:
-        add("general", "info",
-            "All monitored conditions are within healthy ranges.",
-            "No action needed right now — maintain your current irrigation and care schedule and keep monitoring.")
+        add(
+            "general",
+            "info",
+            "All monitored conditions are within the preferred ranges "
+            "for the selected crop.",
+            "No immediate corrective action is needed. Maintain the "
+            "current crop-care schedule and continue monitoring the sensors.",
+        )
 
     return recs
 
 
-def build_optimal_strategy(data, scores, overall_score, recent_recs):
+# -------------------------------------------------------------------
+# OPTIMAL STRATEGY
+# -------------------------------------------------------------------
+
+def build_optimal_strategy(
+    data,
+    scores,
+    overall_score,
+    recent_recs,
+):
     """
-    Produces the single, elaborate 'optimal strategy' page content:
-    a prioritized action plan for the next 24-72 hours.
+    Produce one consolidated optimal strategy for the current conditions.
+
+    The strategy prioritizes recommendations according to severity
+    and organizes them into a practical timeline.
     """
-    urgent = [r for r in recent_recs if r["severity"] == "urgent"]
-    action = [r for r in recent_recs if r["severity"] == "action"]
-    watch = [r for r in recent_recs if r["severity"] == "watch"]
+
+    urgent = [
+        r for r in recent_recs
+        if r["severity"] == "urgent"
+    ]
+
+    action = [
+        r for r in recent_recs
+        if r["severity"] == "action"
+    ]
+
+    watch = [
+        r for r in recent_recs
+        if r["severity"] == "watch"
+    ]
+
+    # ---------------------------------------------------------------
+    # Overall headline
+    # ---------------------------------------------------------------
 
     if overall_score is None:
-        headline = "Not enough sensor data yet to build a strategy."
+        headline = (
+            "Not enough sensor data yet to build a strategy."
+        )
+
     elif overall_score >= 85:
-        headline = "Conditions are excellent — focus on maintenance, not intervention."
+        headline = (
+            "Conditions are excellent — focus on maintenance, "
+            "not intervention."
+        )
+
     elif overall_score >= 65:
-        headline = "Conditions are good with a few areas to fine-tune."
+        headline = (
+            "Conditions are good with a few areas to fine-tune."
+        )
+
     elif overall_score >= 45:
-        headline = "Conditions need attention in the next 24 hours."
+        headline = (
+            "Conditions need attention in the next 24 hours."
+        )
+
     else:
-        headline = "Conditions require immediate action."
+        headline = (
+            "Conditions require immediate action."
+        )
+
+    # ---------------------------------------------------------------
+    # Timeline
+    # ---------------------------------------------------------------
 
     timeline = []
+
     if urgent:
-        timeline.append({"window": "Next 2 hours", "items": [r["strategy"] for r in urgent]})
+        timeline.append(
+            {
+                "window": "Next 2 hours",
+                "items": [
+                    r["strategy"]
+                    for r in urgent
+                ],
+            }
+        )
+
     if action:
-        timeline.append({"window": "Today", "items": [r["strategy"] for r in action]})
+        timeline.append(
+            {
+                "window": "Today",
+                "items": [
+                    r["strategy"]
+                    for r in action
+                ],
+            }
+        )
+
     if watch:
-        timeline.append({"window": "This week", "items": [r["strategy"] for r in watch]})
+        timeline.append(
+            {
+                "window": "This week",
+                "items": [
+                    r["strategy"]
+                    for r in watch
+                ],
+            }
+        )
+
+    # ---------------------------------------------------------------
+    # No actions required
+    # ---------------------------------------------------------------
+
     if not timeline:
-        timeline.append({"window": "Ongoing", "items": [
-            "Keep your current irrigation and fertilization schedule.",
-            "Re-check sensor readings once daily to catch early drift.",
-        ]})
+        timeline.append(
+            {
+                "window": "Ongoing",
+                "items": [
+                    "Keep your current irrigation and crop-care schedule.",
+                    "Re-check sensor readings regularly to catch early drift.",
+                ],
+            }
+        )
 
     return {
         "headline": headline,
