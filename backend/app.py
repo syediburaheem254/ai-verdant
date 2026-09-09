@@ -52,6 +52,7 @@ CORS(app)
 db.init_db()
 
 try:
+
     restored_count = sheets.restore_readings_to_database(db)
 
     logger.info(
@@ -60,6 +61,7 @@ try:
     )
 
 except Exception as e:
+
     logger.exception(
         "Startup database restoration failed: %s",
         e,
@@ -67,46 +69,37 @@ except Exception as e:
 
 
 # ---------------------------------------------------------------------------
-# Helper: determine the crop and analysis ranges for a device
+# Helper: determine crop and analysis ranges
 # ---------------------------------------------------------------------------
 
 def get_crop_context(device_id, crop_name=None):
     """
-    Determine which crop is being monitored and load its requirements
-    from the Google Sheets Crops worksheet.
+    Determine which crop is being monitored and load its requirements.
 
     Priority:
-        1. Explicit crop_name supplied by the current sensor payload
-        2. Crop stored in the device registry
+        1. Explicit crop supplied by caller
+        2. Crop stored in device registry
         3. Config.DEFAULT_CROP
 
     Returns:
         crop_name, crop_requirements, ranges
     """
 
-    # ---------------------------------------------------------
-    # 1. Explicit crop supplied by current request
-    # ---------------------------------------------------------
-
     selected_crop = crop_name
 
     # ---------------------------------------------------------
-    # 2. Try to find crop stored for the device
+    # 1. Try device registry if no crop was explicitly supplied
     # ---------------------------------------------------------
 
     if not selected_crop:
 
         try:
-            devices = db.list_devices()
 
-            for device in devices:
+            device = db.get_device(device_id)
 
-                if (
-                    str(device.get("device_id", "")).strip()
-                    == str(device_id).strip()
-                ):
-                    selected_crop = device.get("crop_type")
-                    break
+            if device:
+
+                selected_crop = device.get("crop_type")
 
         except Exception as e:
 
@@ -116,13 +109,16 @@ def get_crop_context(device_id, crop_name=None):
             )
 
     # ---------------------------------------------------------
-    # 3. Final fallback
+    # 2. Final fallback
     # ---------------------------------------------------------
 
-    selected_crop = selected_crop or Config.DEFAULT_CROP
+    selected_crop = (
+        selected_crop
+        or Config.DEFAULT_CROP
+    )
 
     # ---------------------------------------------------------
-    # 4. Load crop requirements from Google Sheets
+    # 3. Load crop requirements from Google Sheets
     # ---------------------------------------------------------
 
     crop_requirements = sheets.get_crop_requirements(
@@ -130,7 +126,7 @@ def get_crop_context(device_id, crop_name=None):
     )
 
     # ---------------------------------------------------------
-    # 5. Convert crop requirements into analysis ranges
+    # 4. Convert requirements to analysis ranges
     # ---------------------------------------------------------
 
     if crop_requirements:
@@ -204,7 +200,16 @@ def ingest():
         }), 400
 
     # ---------------------------------------------------------
-    # 4. Build sensor data
+    # 4. Determine crop from this reading
+    # ---------------------------------------------------------
+
+    crop_name = (
+        payload.get("crop_type")
+        or Config.DEFAULT_CROP
+    )
+
+    # ---------------------------------------------------------
+    # 5. Build sensor data
     # ---------------------------------------------------------
 
     data = {
@@ -213,6 +218,8 @@ def ingest():
             "timestamp",
             datetime.utcnow().isoformat(),
         ),
+
+        "crop_type": crop_name,
 
         "temperature_c": payload.get(
             "temperature_c"
@@ -241,27 +248,31 @@ def ingest():
     }
 
     # ---------------------------------------------------------
-    # 5. Register / update device
+    # 6. Register / update device
     # ---------------------------------------------------------
 
     db.upsert_device(
+
         device_id,
+
         name=payload.get(
             "device_name"
         ),
+
         farm_name=payload.get(
             "farm_name"
         ),
+
         location=payload.get(
             "location"
         ),
-        crop_type=payload.get(
-            "crop_type"
-        ),
+
+        crop_type=crop_name,
+
     )
 
     # ---------------------------------------------------------
-    # 6. Determine crop-specific requirements
+    # 7. Determine crop-specific requirements
     # ---------------------------------------------------------
 
     (
@@ -269,67 +280,92 @@ def ingest():
         crop_requirements,
         ranges,
     ) = get_crop_context(
+
         device_id,
-        payload.get(
-            "crop_type"
-        ),
+
+        crop_name,
+
     )
 
+    # Keep the resolved crop inside the reading data.
+    data["crop_type"] = crop_name
+
     # ---------------------------------------------------------
-    # 7. Analyze using crop-specific ranges
+    # 8. Analyze using crop-specific ranges
     # ---------------------------------------------------------
 
     scores, overall = analysis.score_reading(
+
         data,
+
         ranges,
+
     )
 
     # ---------------------------------------------------------
-    # 8. Store reading in SQLite
+    # 9. Store reading in SQLite
     # ---------------------------------------------------------
 
     db.insert_reading(
+
         device_id,
+
         data,
+
         overall,
+
     )
 
     # ---------------------------------------------------------
-    # 9. Generate crop-specific recommendations
+    # 10. Generate crop-specific recommendations
     # ---------------------------------------------------------
 
     recs = analysis.generate_recommendations(
+
         data,
+
         scores,
+
         ranges=ranges,
+
     )
 
     # ---------------------------------------------------------
-    # 10. Store recommendations
+    # 11. Store recommendations
     # ---------------------------------------------------------
 
     for r in recs:
 
         db.insert_recommendation(
+
             device_id,
+
             r["category"],
+
             r["severity"],
+
             r["message"],
+
             r["strategy"],
+
         )
 
     # ---------------------------------------------------------
-    # 11. Sync reading to Google Sheets
+    # 12. Sync reading to Google Sheets
     # ---------------------------------------------------------
 
     sheets_ok = sheets.push_reading(
+
         device_id,
+
         data,
+
         overall,
+
     )
 
     # ---------------------------------------------------------
-    # 12. Return result
+    # 13. Return result
     # ---------------------------------------------------------
 
     return jsonify({
@@ -353,7 +389,10 @@ def ingest():
 # Devices
 # ---------------------------------------------------------------------------
 
-@app.route("/api/devices", methods=["GET"])
+@app.route(
+    "/api/devices",
+    methods=["GET"]
+)
 def list_devices():
 
     return jsonify(
@@ -382,24 +421,40 @@ def latest(device_id):
         }), 404
 
     # ---------------------------------------------------------
-    # Determine crop-specific ranges
+    # IMPORTANT:
+    #
+    # Use the crop saved WITH THIS READING.
+    #
+    # This prevents a Wheat reading from becoming a Rice
+    # reading after the server restarts.
     # ---------------------------------------------------------
+
+    reading_crop = reading.get(
+        "crop_type"
+    )
 
     (
         crop_name,
         crop_requirements,
         ranges,
     ) = get_crop_context(
-        device_id
+
+        device_id,
+
+        reading_crop,
+
     )
 
     # ---------------------------------------------------------
-    # Analyze using crop-specific ranges
+    # Analyze using the correct crop
     # ---------------------------------------------------------
 
     scores, overall = analysis.score_reading(
+
         reading,
+
         ranges,
+
     )
 
     # ---------------------------------------------------------
@@ -407,9 +462,13 @@ def latest(device_id):
     # ---------------------------------------------------------
 
     explanations = analysis.explain_reading(
+
         reading,
+
         scores,
+
         ranges,
+
     )
 
     return jsonify({
@@ -455,8 +514,11 @@ def history(device_id):
         }), 400
 
     rows = db.get_history(
+
         device_id,
+
         hours=hours,
+
     )
 
     return jsonify(
@@ -483,24 +545,35 @@ def recommendations(device_id):
         return jsonify([])
 
     # ---------------------------------------------------------
-    # Determine crop-specific ranges
+    # Use crop saved with latest reading
     # ---------------------------------------------------------
+
+    reading_crop = reading.get(
+        "crop_type"
+    )
 
     (
         crop_name,
         crop_requirements,
         ranges,
     ) = get_crop_context(
-        device_id
+
+        device_id,
+
+        reading_crop,
+
     )
 
     # ---------------------------------------------------------
-    # Score using crop-specific ranges
+    # Score using correct crop
     # ---------------------------------------------------------
 
     scores, overall = analysis.score_reading(
+
         reading,
+
         ranges,
+
     )
 
     # ---------------------------------------------------------
@@ -508,9 +581,13 @@ def recommendations(device_id):
     # ---------------------------------------------------------
 
     recs = analysis.generate_recommendations(
+
         reading,
+
         scores,
+
         ranges=ranges,
+
     )
 
     return jsonify({
@@ -547,34 +624,49 @@ def strategy(device_id):
         }), 404
 
     # ---------------------------------------------------------
-    # Determine crop-specific ranges
+    # Use crop saved with latest reading
     # ---------------------------------------------------------
+
+    reading_crop = reading.get(
+        "crop_type"
+    )
 
     (
         crop_name,
         crop_requirements,
         ranges,
     ) = get_crop_context(
-        device_id
+
+        device_id,
+
+        reading_crop,
+
     )
 
     # ---------------------------------------------------------
-    # Score using crop-specific ranges
+    # Score using correct crop
     # ---------------------------------------------------------
 
     scores, overall = analysis.score_reading(
+
         reading,
+
         ranges,
+
     )
 
     # ---------------------------------------------------------
-    # Generate crop-specific recommendations
+    # Generate recommendations
     # ---------------------------------------------------------
 
     recs = analysis.generate_recommendations(
+
         reading,
+
         scores,
+
         ranges=ranges,
+
     )
 
     # ---------------------------------------------------------
@@ -582,10 +674,15 @@ def strategy(device_id):
     # ---------------------------------------------------------
 
     plan = analysis.build_optimal_strategy(
+
         reading,
+
         scores,
+
         overall,
+
         recs,
+
     )
 
     return jsonify({
@@ -616,6 +713,7 @@ def portal(device_id):
     )
 
     return render_template(
+
         "portal.html",
 
         device_id=device_id,
@@ -623,9 +721,13 @@ def portal(device_id):
         reading=reading,
 
         app_url=(
+
             f"{Config.PUBLIC_BASE_URL}"
+
             f"/app/dashboard.html?device={device_id}"
+
         ),
+
     )
 
 
@@ -656,13 +758,17 @@ def healthz():
 def test_crop(crop_name):
 
     requirements = sheets.get_crop_requirements(
+
         crop_name
+
     )
 
     if requirements is None:
 
         return jsonify({
+
             "error": f"crop '{crop_name}' not found"
+
         }), 404
 
     return jsonify(

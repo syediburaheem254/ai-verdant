@@ -10,18 +10,23 @@ can disappear when the service restarts.
 Google Sheets is the persistent backup/source for sensor history.
 On application startup, app.py restores readings from Google Sheets
 into this SQLite database.
+
+This database stores crop_type on each reading so that historical
+sensor readings retain the crop context that was active when they
+were recorded.
 """
 
 import sqlite3
 import os
 from datetime import datetime, timedelta
 from contextlib import contextmanager
+
 from config import Config
 
 
-# ---------------------------------------------------------------------------
+# ===========================================================================
 # DATABASE LOCATION
-# ---------------------------------------------------------------------------
+# ===========================================================================
 
 DATABASE_DIR = os.path.dirname(Config.DATABASE_PATH)
 
@@ -29,9 +34,9 @@ if DATABASE_DIR:
     os.makedirs(DATABASE_DIR, exist_ok=True)
 
 
-# ---------------------------------------------------------------------------
+# ===========================================================================
 # DATABASE SCHEMA
-# ---------------------------------------------------------------------------
+# ===========================================================================
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS devices (
@@ -48,6 +53,7 @@ CREATE TABLE IF NOT EXISTS readings (
     id                  INTEGER PRIMARY KEY AUTOINCREMENT,
     device_id           TEXT NOT NULL,
     timestamp           TEXT NOT NULL,
+    crop_type           TEXT,
     temperature_c       REAL,
     humidity_pct        REAL,
     soil_moisture_pct   REAL,
@@ -60,6 +66,9 @@ CREATE TABLE IF NOT EXISTS readings (
 
 CREATE INDEX IF NOT EXISTS idx_readings_device_time
     ON readings (device_id, timestamp);
+
+CREATE INDEX IF NOT EXISTS idx_readings_device_crop
+    ON readings (device_id, crop_type);
 
 CREATE TABLE IF NOT EXISTS recommendations (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -74,12 +83,16 @@ CREATE TABLE IF NOT EXISTS recommendations (
 """
 
 
-# ---------------------------------------------------------------------------
+# ===========================================================================
 # DATABASE CONNECTION
-# ---------------------------------------------------------------------------
+# ===========================================================================
 
 @contextmanager
 def get_db():
+    """
+    Open a SQLite connection with safe transaction handling.
+    """
+
     conn = sqlite3.connect(Config.DATABASE_PATH)
 
     conn.row_factory = sqlite3.Row
@@ -98,13 +111,71 @@ def get_db():
         conn.close()
 
 
-# ---------------------------------------------------------------------------
+# ===========================================================================
+# DATABASE MIGRATIONS
+# ===========================================================================
+
+def _column_exists(conn, table_name, column_name):
+    """
+    Check whether a column already exists in a SQLite table.
+    """
+
+    rows = conn.execute(
+        f"PRAGMA table_info({table_name})"
+    ).fetchall()
+
+    return any(
+        row["name"] == column_name
+        for row in rows
+    )
+
+
+def _run_migrations(conn):
+    """
+    Apply small, backwards-compatible database migrations.
+
+    This is important because CREATE TABLE IF NOT EXISTS does NOT modify
+    an already-existing table.
+
+    Therefore, older databases that were created before crop_type was
+    introduced need an explicit ALTER TABLE operation.
+    """
+
+    # -----------------------------------------------------------------------
+    # Add crop_type to readings if the database is from an older version.
+    # -----------------------------------------------------------------------
+
+    if not _column_exists(
+        conn,
+        "readings",
+        "crop_type",
+    ):
+        conn.execute(
+            """
+            ALTER TABLE readings
+            ADD COLUMN crop_type TEXT
+            """
+        )
+
+    # -----------------------------------------------------------------------
+    # Make sure the crop index exists.
+    # -----------------------------------------------------------------------
+
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_readings_device_crop
+        ON readings (device_id, crop_type)
+        """
+    )
+
+
+# ===========================================================================
 # INITIALISE DATABASE
-# ---------------------------------------------------------------------------
+# ===========================================================================
 
 def init_db():
     """
-    Create all database tables.
+    Create all database tables and apply migrations.
 
     The database may be empty after a Render restart.
     Google Sheets restoration is handled separately by app.py.
@@ -112,9 +183,18 @@ def init_db():
 
     with get_db() as conn:
 
+        # Create new installations.
         conn.executescript(SCHEMA)
 
+        # Upgrade older installations safely.
+        _run_migrations(conn)
+
+        # -------------------------------------------------------------------
         # Seed demo device.
+        #
+        # INSERT OR IGNORE means an existing device is never overwritten.
+        # -------------------------------------------------------------------
+
         conn.execute(
             """
             INSERT OR IGNORE INTO devices
@@ -139,9 +219,9 @@ def init_db():
         )
 
 
-# ---------------------------------------------------------------------------
+# ===========================================================================
 # DEVICE MANAGEMENT
-# ---------------------------------------------------------------------------
+# ===========================================================================
 
 def upsert_device(
     device_id,
@@ -154,6 +234,8 @@ def upsert_device(
     Insert a device if it doesn't exist.
 
     If it already exists, update only the values supplied by the caller.
+
+    crop_type is preserved when the caller does not provide a new value.
     """
 
     with get_db() as conn:
@@ -221,16 +303,50 @@ def upsert_device(
             )
 
 
-# ---------------------------------------------------------------------------
-# INSERT SENSOR READING
-# ---------------------------------------------------------------------------
+# ===========================================================================
+# GET DEVICE
+# ===========================================================================
 
-def insert_reading(device_id, data, overall_score):
+def get_device(device_id):
+    """
+    Return one device as a dictionary.
+
+    Returns None when the device does not exist.
+    """
+
+    with get_db() as conn:
+
+        row = conn.execute(
+            """
+            SELECT *
+            FROM devices
+            WHERE device_id = ?
+            LIMIT 1
+            """,
+            (device_id,),
+        ).fetchone()
+
+        return dict(row) if row else None
+
+
+# ===========================================================================
+# INSERT SENSOR READING
+# ===========================================================================
+
+def insert_reading(
+    device_id,
+    data,
+    overall_score,
+):
     """
     Insert a new sensor reading.
 
-    Duplicate timestamp + device combinations are ignored. This is
-    important when restoring Google Sheets data after a restart.
+    The crop_type is taken from data["crop_type"] when available.
+
+    If the reading does not explicitly contain a crop, the current
+    crop assigned to the device is used as a fallback.
+
+    Duplicate device + timestamp combinations are ignored.
     """
 
     timestamp = data.get(
@@ -238,9 +354,50 @@ def insert_reading(device_id, data, overall_score):
         datetime.utcnow().isoformat(),
     )
 
+    # -----------------------------------------------------------------------
+    # Determine crop for this reading.
+    #
+    # Priority:
+    #
+    # 1. Crop explicitly attached to the reading.
+    # 2. Current crop stored on the device.
+    # 3. Config.DEFAULT_CROP.
+    # -----------------------------------------------------------------------
+
+    crop_type = data.get("crop_type")
+
+    if crop_type is not None:
+        crop_type = str(crop_type).strip()
+
+        if not crop_type:
+            crop_type = None
+
+    if crop_type is None:
+
+        with get_db() as conn:
+
+            device_row = conn.execute(
+                """
+                SELECT crop_type
+                FROM devices
+                WHERE device_id = ?
+                LIMIT 1
+                """,
+                (device_id,),
+            ).fetchone()
+
+            if device_row:
+                crop_type = device_row["crop_type"]
+
+    if not crop_type:
+        crop_type = Config.DEFAULT_CROP
+
     with get_db() as conn:
 
+        # -------------------------------------------------------------------
         # Prevent duplicate restoration.
+        # -------------------------------------------------------------------
+
         existing = conn.execute(
             """
             SELECT id
@@ -258,12 +415,17 @@ def insert_reading(device_id, data, overall_score):
         if existing:
             return existing["id"]
 
+        # -------------------------------------------------------------------
+        # Insert reading.
+        # -------------------------------------------------------------------
+
         cursor = conn.execute(
             """
             INSERT INTO readings
             (
                 device_id,
                 timestamp,
+                crop_type,
                 temperature_c,
                 humidity_pct,
                 soil_moisture_pct,
@@ -272,11 +434,12 @@ def insert_reading(device_id, data, overall_score):
                 motion_detected,
                 overall_score
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 device_id,
                 timestamp,
+                crop_type,
                 data.get("temperature_c"),
                 data.get("humidity_pct"),
                 data.get("soil_moisture_pct"),
@@ -290,9 +453,9 @@ def insert_reading(device_id, data, overall_score):
         return cursor.lastrowid
 
 
-# ---------------------------------------------------------------------------
+# ===========================================================================
 # INSERT RECOMMENDATION
-# ---------------------------------------------------------------------------
+# ===========================================================================
 
 def insert_recommendation(
     device_id,
@@ -301,6 +464,10 @@ def insert_recommendation(
     message,
     strategy="",
 ):
+    """
+    Store one generated recommendation.
+    """
+
     with get_db() as conn:
 
         conn.execute(
@@ -327,11 +494,14 @@ def insert_recommendation(
         )
 
 
-# ---------------------------------------------------------------------------
+# ===========================================================================
 # GET LATEST READING
-# ---------------------------------------------------------------------------
+# ===========================================================================
 
 def get_latest_reading(device_id):
+    """
+    Return the most recent reading for a device.
+    """
 
     with get_db() as conn:
 
@@ -352,14 +522,21 @@ def get_latest_reading(device_id):
         return dict(row) if row else None
 
 
-# ---------------------------------------------------------------------------
+# ===========================================================================
 # GET HISTORY
-# ---------------------------------------------------------------------------
+# ===========================================================================
 
-def get_history(device_id, hours=24):
+def get_history(
+    device_id,
+    hours=24,
+):
+    """
+    Return readings from the requested number of previous hours.
+    """
 
     try:
         hours = int(hours)
+
     except (TypeError, ValueError):
         hours = 24
 
@@ -395,11 +572,18 @@ def get_history(device_id, hours=24):
         ]
 
 
-# ---------------------------------------------------------------------------
+# ===========================================================================
 # GET ALL READINGS
-# ---------------------------------------------------------------------------
+# ===========================================================================
 
-def get_all_readings(device_id=None):
+def get_all_readings(
+    device_id=None,
+):
+    """
+    Return all readings.
+
+    If device_id is supplied, only that device's readings are returned.
+    """
 
     with get_db() as conn:
 
@@ -434,11 +618,55 @@ def get_all_readings(device_id=None):
         ]
 
 
-# ---------------------------------------------------------------------------
-# GET RECOMMENDATIONS
-# ---------------------------------------------------------------------------
+# ===========================================================================
+# GET READINGS FOR A SPECIFIC CROP
+# ===========================================================================
 
-def get_recommendations(device_id, limit=20):
+def get_readings_by_crop(
+    device_id,
+    crop_type,
+):
+    """
+    Return readings belonging to a specific crop.
+
+    This is useful for historical crop-aware analysis and trends.
+    """
+
+    with get_db() as conn:
+
+        rows = conn.execute(
+            """
+            SELECT *
+            FROM readings
+
+            WHERE device_id = ?
+              AND crop_type = ?
+
+            ORDER BY timestamp ASC
+            """,
+            (
+                device_id,
+                crop_type,
+            ),
+        ).fetchall()
+
+        return [
+            dict(row)
+            for row in rows
+        ]
+
+
+# ===========================================================================
+# GET RECOMMENDATIONS
+# ===========================================================================
+
+def get_recommendations(
+    device_id,
+    limit=20,
+):
+    """
+    Return recent recommendations for a device.
+    """
 
     with get_db() as conn:
 
@@ -465,11 +693,14 @@ def get_recommendations(device_id, limit=20):
         ]
 
 
-# ---------------------------------------------------------------------------
+# ===========================================================================
 # LIST DEVICES
-# ---------------------------------------------------------------------------
+# ===========================================================================
 
 def list_devices():
+    """
+    Return all registered devices.
+    """
 
     with get_db() as conn:
 
@@ -488,11 +719,17 @@ def list_devices():
         ]
 
 
-# ---------------------------------------------------------------------------
+# ===========================================================================
 # CHECK WHETHER A READING EXISTS
-# ---------------------------------------------------------------------------
+# ===========================================================================
 
-def reading_exists(device_id, timestamp):
+def reading_exists(
+    device_id,
+    timestamp,
+):
+    """
+    Return True when a device/timestamp reading already exists.
+    """
 
     with get_db() as conn:
 
