@@ -1,114 +1,905 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>AI Verdant — Trends & History</title>
-<link rel="stylesheet" href="css/theme.css">
-<link rel="manifest" href="manifest.json">
-<meta name="theme-color" content="#06090a">
-<link rel="apple-touch-icon" href="assets/icon-192.png">
-<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.4/chart.umd.min.js"></script>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+  <title>AI Verdant — Trends &amp; History</title>
+
+  <link rel="stylesheet" href="css/theme.css">
+  <link rel="manifest" href="manifest.json">
+
+  <meta name="theme-color" content="#06090a">
+
+  <link
+    rel="apple-touch-icon"
+    href="assets/icon-192.png"
+  >
+
+  <!-- ============================================================
+       Chart.js
+       ============================================================ -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+
 </head>
+
+
 <body>
+
 <div class="app-shell">
-  <aside class="sidebar" id="aiv-sidebar"></aside>
+
+  <!-- ==========================================================
+       SIDEBAR
+       ========================================================== -->
+
+  <aside
+    class="sidebar"
+    id="aiv-sidebar"
+  ></aside>
+
+
+  <!-- ==========================================================
+       MAIN CONTENT
+       ========================================================== -->
+
   <main class="main">
+
     <div class="page-header">
-      <div class="eyebrow">Fluctuations over time</div>
-      <div class="page-title">Trends &amp; History</div>
-      <p class="page-desc">How your field's conditions have moved over the last day — and what the shape of each line actually means.</p>
+
+      <div class="eyebrow">
+        Fluctuations over time
+      </div>
+
+      <div class="page-title">
+        Trends &amp; History
+      </div>
+
+      <p class="page-desc">
+        How your field's conditions have moved over time —
+        and what the shape of each line actually means.
+      </p>
+
     </div>
+
+
+    <!-- ========================================================
+         TIME RANGE
+         ======================================================== -->
 
     <div style="margin-bottom:18px;">
-      <select id="aiv-range" style="background:var(--bg-panel); color:var(--text); border:1px solid var(--line); border-radius:99px; padding:9px 16px; font-family:var(--font-body);">
-        <option value="6">Last 6 hours</option>
-        <option value="24" selected>Last 24 hours</option>
-        <option value="72">Last 3 days</option>
-        <option value="168">Last 7 days</option>
+
+      <select
+        id="aiv-range"
+        style="
+          background:var(--bg-panel);
+          color:var(--text);
+          border:1px solid var(--line);
+          border-radius:99px;
+          padding:9px 16px;
+          font-family:var(--font-body);
+        "
+      >
+
+        <option value="6">
+          Last 6 hours
+        </option>
+
+        <option value="24" selected>
+          Last 24 hours
+        </option>
+
+        <option value="72">
+          Last 3 days
+        </option>
+
+        <option value="168">
+          Last 7 days
+        </option>
+
       </select>
+
     </div>
 
-    <div id="aiv-content"><div class="card">Loading history…</div></div>
+
+    <!-- ========================================================
+         HISTORY CONTENT
+         ======================================================== -->
+
+    <div id="aiv-content">
+
+      <div class="card">
+        Loading history…
+      </div>
+
+    </div>
+
   </main>
+
 </div>
+
+
+<!-- ==============================================================
+     AI VERDANT SCRIPTS
+     ============================================================== -->
 
 <script src="js/api.js"></script>
 <script src="js/ui.js"></script>
+
+
 <script>
+
+/* ================================================================
+   SENSOR DEFINITIONS
+   ================================================================ */
+
 const CHART_DEFS = [
-  { key: "temperature_c", label: "Temperature (°C)" },
-  { key: "humidity_pct", label: "Humidity (%)" },
-  { key: "soil_moisture_pct", label: "Soil Moisture (%)" },
-  { key: "ph", label: "Soil pH" },
+
+  {
+    key: "temperature_c",
+    label: "Temperature",
+    displayLabel: "Temperature (°C)",
+    unit: "°C"
+  },
+
+  {
+    key: "humidity_pct",
+    label: "Humidity",
+    displayLabel: "Humidity (%)",
+    unit: "%"
+  },
+
+  {
+    key: "soil_moisture_pct",
+    label: "Soil Moisture",
+    displayLabel: "Soil Moisture (%)",
+    unit: "%"
+  },
+
+  {
+    key: "ph",
+    label: "Soil pH",
+    displayLabel: "Soil pH",
+    unit: ""
+  },
+
+  {
+    key: "water_level_cm",
+    label: "Water Level",
+    displayLabel: "Water Level (cm)",
+    unit: " cm"
+  }
+
 ];
 
-function describeTrend(label, values) {
-  const clean = values.filter((v) => v !== null && v !== undefined);
-  if (clean.length < 2) return `Not enough ${label.toLowerCase()} readings yet to describe a trend.`;
-  const first = clean[0], last = clean[clean.length - 1];
-  const min = Math.min(...clean), max = Math.max(...clean);
-  const delta = (last - first).toFixed(1);
-  const direction = last > first ? "risen" : last < first ? "fallen" : "stayed flat";
-  return `${label} has ${direction} by ${Math.abs(delta)} over this window (range ${min}–${max}), currently at ${last}.`;
+
+/* ================================================================
+   ACTIVE CHART INSTANCES
+   ================================================================ */
+
+const chartInstances = {};
+
+
+/* ================================================================
+   DESTROY OLD CHARTS
+   ================================================================ */
+
+function destroyCharts() {
+
+  Object.keys(chartInstances).forEach((key) => {
+
+    if (chartInstances[key]) {
+
+      chartInstances[key].destroy();
+
+      chartInstances[key] = null;
+
+    }
+
+  });
+
 }
 
-async function drawChart(canvasId, labels, values, color, label) {
-  new Chart(document.getElementById(canvasId), {
-    type: "line",
-    data: {
-      labels,
-      datasets: [{
-        label, data: values, borderColor: color, backgroundColor: color + "22",
-        fill: true, tension: 0.35, pointRadius: 0, borderWidth: 2,
-      }],
-    },
-    options: {
-      responsive: true, maintainAspectRatio: false,
-      plugins: { legend: { display: false } },
-      scales: {
-        x: { ticks: { color: "#7fa691", maxTicksLimit: 6 }, grid: { color: "#16261f" } },
-        y: { ticks: { color: "#7fa691" }, grid: { color: "#16261f" } },
-      },
-    },
-  });
+
+/* ================================================================
+   FORMAT VALUE
+   ================================================================ */
+
+function formatValue(value, unit = "") {
+
+  if (
+    value === null ||
+    value === undefined ||
+    Number.isNaN(Number(value))
+  ) {
+
+    return "—";
+
+  }
+
+  const number = Number(value);
+
+  const formatted =
+    Number.isInteger(number)
+      ? String(number)
+      : number.toFixed(1);
+
+  return `${formatted}${unit}`;
+
 }
+
+
+/* ================================================================
+   DESCRIBE TREND
+   ================================================================ */
+
+function describeTrend(
+  label,
+  values,
+  unit = ""
+) {
+
+  const clean = values
+
+    .filter(
+      (value) =>
+        value !== null &&
+        value !== undefined &&
+        !Number.isNaN(Number(value))
+    )
+
+    .map(Number);
+
+
+  /* --------------------------------------------------------------
+     Not enough data
+     -------------------------------------------------------------- */
+
+  if (clean.length < 2) {
+
+    return `Not enough ${label.toLowerCase()} readings yet to describe a trend.`;
+
+  }
+
+
+  const first = clean[0];
+
+  const last = clean[clean.length - 1];
+
+  const minimum = Math.min(...clean);
+
+  const maximum = Math.max(...clean);
+
+  const delta = last - first;
+
+
+  /* --------------------------------------------------------------
+     Determine direction
+     -------------------------------------------------------------- */
+
+  let direction;
+
+  if (Math.abs(delta) < 0.05) {
+
+    direction = "stable";
+
+  }
+  else if (delta > 0) {
+
+    direction = "risen";
+
+  }
+  else {
+
+    direction = "fallen";
+
+  }
+
+
+  /* --------------------------------------------------------------
+     Stable
+     -------------------------------------------------------------- */
+
+  if (direction === "stable") {
+
+    return `
+      ${label} has stayed relatively stable over this window,
+      ranging from ${formatValue(minimum, unit)}
+      to ${formatValue(maximum, unit)},
+      and is currently at ${formatValue(last, unit)}.
+    `;
+
+  }
+
+
+  /* --------------------------------------------------------------
+     Rising / falling
+     -------------------------------------------------------------- */
+
+  return `
+    ${label} has ${direction} by
+    ${formatValue(Math.abs(delta), unit)}
+    over this window,
+    ranging from ${formatValue(minimum, unit)}
+    to ${formatValue(maximum, unit)},
+    and is currently at ${formatValue(last, unit)}.
+  `;
+
+}
+
+
+/* ================================================================
+   DRAW CHART
+   ================================================================ */
+
+function drawChart(
+  canvasId,
+  labels,
+  values,
+  color,
+  label,
+  unit
+) {
+
+  const canvas =
+    document.getElementById(canvasId);
+
+
+  if (!canvas) {
+
+    console.warn(
+      `AI Verdant: Canvas not found: ${canvasId}`
+    );
+
+    return;
+
+  }
+
+
+  /* --------------------------------------------------------------
+     Destroy existing chart on this canvas
+     -------------------------------------------------------------- */
+
+  if (chartInstances[canvasId]) {
+
+    chartInstances[canvasId].destroy();
+
+  }
+
+
+  /* --------------------------------------------------------------
+     Create Chart.js chart
+     -------------------------------------------------------------- */
+
+  chartInstances[canvasId] =
+    new Chart(
+
+      canvas,
+
+      {
+
+        type: "line",
+
+
+        data: {
+
+          labels: labels,
+
+          datasets: [
+
+            {
+
+              label: label,
+
+              data: values,
+
+              borderColor: color,
+
+              backgroundColor: `${color}22`,
+
+              fill: true,
+
+              tension: 0.35,
+
+              pointRadius: values.length <= 10 ? 3 : 1.5,
+
+              pointHoverRadius: 5,
+
+              borderWidth: 2,
+
+              spanGaps: true
+
+            }
+
+          ]
+
+        },
+
+
+        options: {
+
+          responsive: true,
+
+          maintainAspectRatio: false,
+
+
+          interaction: {
+
+            mode: "index",
+
+            intersect: false
+
+          },
+
+
+          plugins: {
+
+            legend: {
+
+              display: false
+
+            },
+
+
+            tooltip: {
+
+              callbacks: {
+
+                label: function(context) {
+
+                  return `${label}: ${formatValue(
+                    context.parsed.y,
+                    unit
+                  )}`;
+
+                }
+
+              }
+
+            }
+
+          },
+
+
+          scales: {
+
+            x: {
+
+              ticks: {
+
+                color: "#7fa691",
+
+                maxTicksLimit: 7
+
+              },
+
+              grid: {
+
+                color: "#16261f"
+
+              }
+
+            },
+
+
+            y: {
+
+              beginAtZero: false,
+
+              ticks: {
+
+                color: "#7fa691",
+
+                callback: function(value) {
+
+                  return formatValue(
+                    value,
+                    unit
+                  );
+
+                }
+
+              },
+
+              grid: {
+
+                color: "#16261f"
+
+              }
+
+            }
+
+          }
+
+        }
+
+      }
+
+    );
+
+}
+
+
+/* ================================================================
+   BUILD CHART CARD
+   ================================================================ */
+
+function buildChartCard(def) {
+
+  const meta =
+    AIV.SENSOR_META[def.key] || { icon: "•" };
+
+
+  return `
+
+    <div class="card">
+
+      <div
+        class="metric-label"
+        style="margin-bottom:12px;"
+      >
+
+        ${meta.icon}
+
+        ${def.displayLabel}
+
+      </div>
+
+
+      <div class="chart-wrap">
+
+        <canvas
+          id="chart-${def.key}"
+        ></canvas>
+
+      </div>
+
+
+      <p
+        id="desc-${def.key}"
+        style="
+          font-size:13px;
+          color:var(--muted);
+          margin-top:12px;
+          line-height:1.5;
+        "
+      ></p>
+
+    </div>
+
+  `;
+
+}
+
+
+/* ================================================================
+   LOAD HISTORY
+   ================================================================ */
 
 async function load(hours) {
-  const deviceId = AIV.getDeviceId();
-  const content = document.getElementById("aiv-content");
-  content.innerHTML = `<div class="card">Loading history…</div>`;
-  try {
-    const rows = await AIV.api.history(deviceId, hours);
-    if (!rows.length) {
-      content.innerHTML = AIV.emptyState("No readings in this window yet. Once the sensor box syncs a few times, trend lines will appear here.");
-      return;
-    }
-    const labels = rows.map((r) => AIV.formatTime(r.timestamp));
 
-    content.innerHTML = `<div class="grid grid-2">${CHART_DEFS.map((c) => `
-      <div class="card">
-        <div class="metric-label" style="margin-bottom:12px;">${AIV.SENSOR_META[c.key].icon} ${c.label}</div>
-        <div class="chart-wrap"><canvas id="chart-${c.key}"></canvas></div>
-        <p style="font-size:13px; color:var(--muted); margin-top:12px; line-height:1.5;" id="desc-${c.key}"></p>
-      </div>`).join("")}</div>`;
+  const deviceId =
+    AIV.getDeviceId();
 
-    CHART_DEFS.forEach((c) => {
-      const values = rows.map((r) => r[c.key]);
-      drawChart(`chart-${c.key}`, labels, values, AIV.SENSOR_META[c.key].color, c.label);
-      document.getElementById(`desc-${c.key}`).textContent = describeTrend(c.label, values);
-    });
-  } catch (e) {
-    content.innerHTML = AIV.emptyState(`Couldn't load history (${e.message}).`);
+
+  const content =
+    document.getElementById("aiv-content");
+
+
+  /* --------------------------------------------------------------
+     Check Chart.js
+     -------------------------------------------------------------- */
+
+  if (typeof Chart === "undefined") {
+
+    content.innerHTML =
+      AIV.emptyState(
+        "The chart library could not be loaded. Check your internet connection and refresh the page."
+      );
+
+    console.error(
+      "AI Verdant: Chart.js is not available."
+    );
+
+    return;
+
   }
+
+
+  /* --------------------------------------------------------------
+     Clear previous charts
+     -------------------------------------------------------------- */
+
+  destroyCharts();
+
+
+  content.innerHTML = `
+
+    <div class="card">
+      Loading history…
+    </div>
+
+  `;
+
+
+  try {
+
+    /* ------------------------------------------------------------
+       Request history from backend
+       ------------------------------------------------------------ */
+
+    const rows =
+      await AIV.api.history(
+        deviceId,
+        Number(hours)
+      );
+
+
+    /* ------------------------------------------------------------
+       Validate response
+       ------------------------------------------------------------ */
+
+    if (!Array.isArray(rows)) {
+
+      throw new Error(
+        "History endpoint returned an invalid response."
+      );
+
+    }
+
+
+    /* ------------------------------------------------------------
+       No readings
+       ------------------------------------------------------------ */
+
+    if (rows.length === 0) {
+
+      content.innerHTML =
+        AIV.emptyState(
+          "No readings in this window yet. Once the sensor box syncs a few times, trend lines will appear here."
+        );
+
+      return;
+
+    }
+
+
+    /* ------------------------------------------------------------
+       Sort oldest → newest
+       ------------------------------------------------------------ */
+
+    rows.sort(
+
+      (a, b) =>
+        new Date(a.timestamp) -
+        new Date(b.timestamp)
+
+    );
+
+
+    /* ------------------------------------------------------------
+       Time labels
+       ------------------------------------------------------------ */
+
+    const labels =
+      rows.map(
+
+        (row) =>
+          AIV.formatTime(
+            row.timestamp
+          )
+
+      );
+
+
+    /* ------------------------------------------------------------
+       Build page
+       ------------------------------------------------------------ */
+
+    content.innerHTML = `
+
+      <div
+        style="
+          margin-bottom:14px;
+          color:var(--muted);
+          font-size:13px;
+        "
+      >
+
+        Showing
+
+        <strong style="color:var(--text);">
+          ${rows.length}
+        </strong>
+
+        reading${rows.length === 1 ? "" : "s"}
+
+        for
+
+        <strong style="color:var(--text);">
+          ${deviceId}
+        </strong>.
+
+      </div>
+
+
+      <div class="grid grid-2">
+
+        ${CHART_DEFS
+          .map(buildChartCard)
+          .join("")}
+
+      </div>
+
+    `;
+
+
+    /* ------------------------------------------------------------
+       Render each sensor chart
+       ------------------------------------------------------------ */
+
+    CHART_DEFS.forEach((def) => {
+
+      const values =
+        rows.map((row) => {
+
+          const value =
+            row[def.key];
+
+
+          if (
+            value === null ||
+            value === undefined ||
+            value === ""
+          ) {
+
+            return null;
+
+          }
+
+
+          const number =
+            Number(value);
+
+
+          return Number.isNaN(number)
+            ? null
+            : number;
+
+        });
+
+
+      const meta =
+        AIV.SENSOR_META[def.key];
+
+
+      const color =
+        meta && meta.color
+          ? meta.color
+          : "#36e68a";
+
+
+      /* ----------------------------------------------------------
+         Draw chart
+         ---------------------------------------------------------- */
+
+      drawChart(
+
+        `chart-${def.key}`,
+
+        labels,
+
+        values,
+
+        color,
+
+        def.label,
+
+        def.unit
+
+      );
+
+
+      /* ----------------------------------------------------------
+         Add explanation
+         ---------------------------------------------------------- */
+
+      const description =
+        document.getElementById(
+          `desc-${def.key}`
+        );
+
+
+      if (description) {
+
+        description.textContent =
+          describeTrend(
+
+            def.label,
+
+            values,
+
+            def.unit
+
+          );
+
+      }
+
+    });
+
+
+  }
+
+  catch (error) {
+
+    console.error(
+      "AI Verdant Trends Error:",
+      error
+    );
+
+
+    content.innerHTML =
+      AIV.emptyState(
+        `Couldn't load history (${error.message}).`
+      );
+
+  }
+
 }
+
+
+/* ================================================================
+   PAGE INITIALIZATION
+   ================================================================ */
 
 async function main() {
+
+  /* --------------------------------------------------------------
+     Build shared navigation
+     -------------------------------------------------------------- */
+
   await AIV.renderShell();
-  document.getElementById("aiv-range").addEventListener("change", (e) => load(e.target.value));
-  load(24);
+
+
+  /* --------------------------------------------------------------
+     Range selector
+     -------------------------------------------------------------- */
+
+  const rangeSelector =
+    document.getElementById(
+      "aiv-range"
+    );
+
+
+  rangeSelector.addEventListener(
+    "change",
+    function(event) {
+
+      load(
+        Number(event.target.value)
+      );
+
+    }
+  );
+
+
+  /* --------------------------------------------------------------
+     Initial 24-hour load
+     -------------------------------------------------------------- */
+
+  await load(24);
+
 }
+
+
+/* ================================================================
+   START APPLICATION
+   ================================================================ */
+
 main();
+
 </script>
+
 </body>
+
 </html>

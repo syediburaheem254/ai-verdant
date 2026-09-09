@@ -3,84 +3,460 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
 <title>AI Verdant — Optimal Strategy</title>
+
 <link rel="stylesheet" href="css/theme.css">
 <link rel="manifest" href="manifest.json">
+
 <meta name="theme-color" content="#06090a">
 <link rel="apple-touch-icon" href="assets/icon-192.png">
 </head>
+
 <body>
+
 <div class="app-shell">
+
+  <!-- ================================================================
+       SIDEBAR
+       ================================================================ -->
   <aside class="sidebar" id="aiv-sidebar"></aside>
+
+
+  <!-- ================================================================
+       MAIN CONTENT
+       ================================================================ -->
   <main class="main">
+
     <div class="page-header">
-      <div class="eyebrow">Prioritized action plan</div>
-      <div class="page-title">Optimal Strategy</div>
-      <p class="page-desc">One consolidated plan, built from every sensor reading, ranked by urgency so you know exactly what to do and when.</p>
+
+      <div class="eyebrow">
+        Prioritized action plan
+      </div>
+
+      <div class="page-title">
+        Optimal Strategy
+      </div>
+
+      <p class="page-desc">
+        One consolidated plan, built from every sensor reading, ranked by
+        urgency so you know exactly what to do and when.
+      </p>
+
     </div>
-    <div id="aiv-content"><div class="card">Building your strategy…</div></div>
+
+
+    <!-- ================================================================
+         CONTENT
+         ================================================================ -->
+    <div id="aiv-content">
+
+      <div class="card">
+        Building your strategy…
+      </div>
+
+    </div>
+
   </main>
+
 </div>
+
+
+<!-- ================================================================
+     AI VERDANT SCRIPTS
+     ================================================================ -->
 
 <script src="js/api.js"></script>
 <script src="js/ui.js"></script>
+
+
 <script>
 async function main() {
+
+  /* --------------------------------------------------------------
+     Build the shared navigation/sidebar
+     -------------------------------------------------------------- */
   await AIV.renderShell();
+
+
+  /* --------------------------------------------------------------
+     Get current device
+     -------------------------------------------------------------- */
   const deviceId = AIV.getDeviceId();
+
   const content = document.getElementById("aiv-content");
 
+
   try {
-    const [strategy, recs] = await Promise.all([
-      AIV.api.strategy(deviceId),
-      AIV.api.recommendations(deviceId),
-    ]);
 
-    const timelineHtml = strategy.timeline.map((block) => `
-      <div class="timeline-block">
-        <div class="timeline-window">${block.window}</div>
-        <div class="timeline-items">
-          ${block.items.map((item) => `<div class="timeline-item">${item}</div>`).join("")}
-        </div>
-      </div>
-    `).join("");
+    /* ------------------------------------------------------------
+       Load strategy + recommendations
+       ------------------------------------------------------------ */
 
-    const recHtml = recs.map((r) => `
-      <div class="rec-row">
-        <div class="rec-body">
-          <div class="rec-msg">${AIV.severityBadge(r.severity)} &nbsp;${r.message}</div>
-          <div class="rec-strategy">${r.strategy}</div>
+    const [strategyResponse, recommendationsResponse] =
+      await Promise.all([
+        AIV.api.strategy(deviceId),
+        AIV.api.recommendations(deviceId)
+      ]);
+
+
+    /* ------------------------------------------------------------
+       BACKEND RESPONSE STRUCTURE
+
+       The strategy endpoint returns something like:
+
+       {
+         "device_id": "device-001",
+         "crop": "Tomato",
+         "crop_requirements": {...},
+         "strategy": {
+           "headline": "...",
+           "overall_score": 98.5,
+           "timeline": [...]
+         }
+       }
+
+       Therefore the actual strategy is inside:
+
+       strategyResponse.strategy
+       ------------------------------------------------------------ */
+
+    const strategy =
+      strategyResponse &&
+      strategyResponse.strategy
+        ? strategyResponse.strategy
+        : strategyResponse;
+
+
+    /* ------------------------------------------------------------
+       Safety checks
+       ------------------------------------------------------------ */
+
+    const timeline =
+      strategy && Array.isArray(strategy.timeline)
+        ? strategy.timeline
+        : [];
+
+
+    const recommendations =
+      Array.isArray(recommendationsResponse)
+        ? recommendationsResponse
+        : (
+            recommendationsResponse &&
+            Array.isArray(recommendationsResponse.recommendations)
+              ? recommendationsResponse.recommendations
+              : []
+          );
+
+
+    /* ------------------------------------------------------------
+       Strategy headline
+       ------------------------------------------------------------ */
+
+    const headline =
+      strategy && strategy.headline
+        ? strategy.headline
+        : "Strategy generated from the latest sensor reading.";
+
+
+    /* ------------------------------------------------------------
+       Overall score
+       ------------------------------------------------------------ */
+
+    const overallScore =
+      strategy &&
+      strategy.overall_score !== undefined &&
+      strategy.overall_score !== null
+        ? Number(strategy.overall_score)
+        : null;
+
+
+    /* ==============================================================
+       BUILD ACTION TIMELINE
+       ============================================================== */
+
+    const timelineHtml = timeline.map((block) => {
+
+      const windowName =
+        block && block.window
+          ? block.window
+          : "Next";
+
+
+      const items =
+        block && Array.isArray(block.items)
+          ? block.items
+          : [];
+
+
+      const itemsHtml = items.length
+
+        ? items.map((item) => `
+            <div class="timeline-item">
+              ${item}
+            </div>
+          `).join("")
+
+        : `
+            <div class="timeline-item">
+              No specific actions required.
+            </div>
+          `;
+
+
+      return `
+        <div class="timeline-block">
+
+          <div class="timeline-window">
+            ${windowName}
+          </div>
+
+          <div class="timeline-items">
+            ${itemsHtml}
+          </div>
+
         </div>
-      </div>`).join("");
+      `;
+
+    }).join("");
+
+
+    /* ==============================================================
+       BUILD RECOMMENDATIONS
+       ============================================================== */
+
+    const recHtml = recommendations.map((recommendation) => {
+
+      const severity =
+        recommendation &&
+        recommendation.severity
+          ? recommendation.severity
+          : "info";
+
+
+      const message =
+        recommendation &&
+        recommendation.message
+          ? recommendation.message
+          : "";
+
+
+      const strategyText =
+        recommendation &&
+        recommendation.strategy
+          ? recommendation.strategy
+          : "";
+
+
+      return `
+        <div class="rec-row">
+
+          <div class="rec-body">
+
+            <div class="rec-msg">
+
+              ${AIV.severityBadge(severity)}
+
+              &nbsp;
+
+              ${message}
+
+            </div>
+
+            ${
+              strategyText
+                ? `
+                  <div class="rec-strategy">
+                    ${strategyText}
+                  </div>
+                `
+                : ""
+            }
+
+          </div>
+
+        </div>
+      `;
+
+    }).join("");
+
+
+    /* ==============================================================
+       RENDER PAGE
+       ============================================================== */
 
     content.innerHTML = `
-      <div class="card glow-green" style="margin-bottom:20px;">
+
+      <!-- ==========================================================
+           SCORE / HEADLINE
+           ========================================================== -->
+
+      <div
+        class="card glow-green"
+        style="margin-bottom:20px;"
+      >
+
         <div class="score-hero">
-          <div class="score-ring" id="aiv-score-ring"></div>
+
+          <div
+            class="score-ring"
+            id="aiv-score-ring"
+          ></div>
+
+
           <div>
-            <h3 style="font-size:19px; margin-bottom:8px;">${strategy.headline}</h3>
-            <p style="color:var(--muted); font-size:14px; line-height:1.6;">This plan is generated fresh from your most recent sensor reading and updates automatically every time the device syncs.</p>
+
+            <h3
+              style="
+                font-size:19px;
+                margin-bottom:8px;
+              "
+            >
+              ${headline}
+            </h3>
+
+
+            <p
+              style="
+                color:var(--muted);
+                font-size:14px;
+                line-height:1.6;
+              "
+            >
+              This plan is generated fresh from your most recent
+              sensor reading and updates automatically every time
+              the device syncs.
+            </p>
+
           </div>
+
         </div>
+
       </div>
 
-      <div class="grid grid-2" style="align-items:start;">
+
+      <!-- ==========================================================
+           TWO-COLUMN SECTION
+           ========================================================== -->
+
+      <div
+        class="grid grid-2"
+        style="align-items:start;"
+      >
+
+
+        <!-- ========================================================
+             ACTION TIMELINE
+             ======================================================== -->
+
         <div class="card">
-          <div class="metric-label" style="margin-bottom:16px;">Action timeline</div>
-          <div class="timeline">${timelineHtml}</div>
+
+          <div
+            class="metric-label"
+            style="margin-bottom:16px;"
+          >
+            Action timeline
+          </div>
+
+
+          ${
+            timelineHtml
+
+              ? `
+                <div class="timeline">
+                  ${timelineHtml}
+                </div>
+              `
+
+              : AIV.emptyState(
+                  "No timeline actions are available right now."
+                )
+          }
+
         </div>
+
+
+        <!-- ========================================================
+             RECOMMENDATIONS
+             ======================================================== -->
+
         <div class="card">
-          <div class="metric-label" style="margin-bottom:6px;">All recommendations</div>
-          ${recHtml || AIV.emptyState("Nothing to flag right now.")}
+
+          <div
+            class="metric-label"
+            style="margin-bottom:6px;"
+          >
+            All recommendations
+          </div>
+
+
+          ${
+            recHtml
+
+              ? recHtml
+
+              : AIV.emptyState(
+                  "Nothing to flag right now."
+                )
+          }
+
         </div>
+
       </div>
+
     `;
-    AIV.renderScoreRing("aiv-score-ring", strategy.overall_score);
-  } catch (e) {
-    content.innerHTML = AIV.emptyState(`Couldn't build a strategy (${e.message}). Make sure the device has sent at least one reading.`);
+
+
+    /* --------------------------------------------------------------
+       Draw score ring
+       -------------------------------------------------------------- */
+
+    if (
+      overallScore !== null &&
+      !Number.isNaN(overallScore)
+    ) {
+
+      AIV.renderScoreRing(
+        "aiv-score-ring",
+        overallScore
+      );
+
+    }
+
+
+  } catch (error) {
+
+    /* --------------------------------------------------------------
+       Log the real error for debugging
+       -------------------------------------------------------------- */
+
+    console.error(
+      "AI Verdant Strategy Page Error:",
+      error
+    );
+
+
+    /* --------------------------------------------------------------
+       Show friendly error on the page
+       -------------------------------------------------------------- */
+
+    content.innerHTML =
+      AIV.emptyState(
+        `Couldn't build a strategy (${error.message}). Make sure the device has sent at least one reading.`
+      );
+
   }
+
 }
+
+
+/* ================================================================
+   START PAGE
+   ================================================================ */
+
 main();
+
 </script>
+
 </body>
 </html>

@@ -36,6 +36,7 @@ class Config:
     GOOGLE_SHEET_NAME = os.getenv("GOOGLE_SHEET_NAME", "AI Farming - Sensor Log")
     GOOGLE_SHEET_ID = os.getenv("GOOGLE_SHEET_ID", "")  # optional, faster than name lookup
     SHEETS_SYNC_ENABLED = os.getenv("SHEETS_SYNC_ENABLED", "true").lower() == "true"
+    DEFAULT_CROP = os.getenv("DEFAULT_CROP", "Rice")
 
     # --- Ideal ranges used by the scoring / recommendation engine --------
     # Tweak these per crop. Defaults below are safe general-purpose values.

@@ -9,72 +9,221 @@
 <meta name="theme-color" content="#06090a">
 <link rel="apple-touch-icon" href="assets/icon-192.png">
 </head>
+
 <body>
 <div class="app-shell">
   <aside class="sidebar" id="aiv-sidebar"></aside>
+
   <main class="main">
     <div class="page-header">
       <div class="eyebrow">Per-sensor breakdown</div>
       <div class="page-title">Sensor Details</div>
-      <p class="page-desc">Every sensor on the box, its raw reading, ideal range, and a health score explaining exactly how it's rated.</p>
+      <p class="page-desc">
+        Every sensor on the box, its raw reading, ideal range, and a health
+        score explaining exactly how it's rated.
+      </p>
     </div>
-    <div id="aiv-content"><div class="card">Loading…</div></div>
+
+    <div id="aiv-content">
+      <div class="card">Loading…</div>
+    </div>
   </main>
 </div>
 
 <script src="js/api.js"></script>
 <script src="js/ui.js"></script>
+
 <script>
 async function main() {
   await AIV.renderShell();
+
   const deviceId = AIV.getDeviceId();
   const content = document.getElementById("aiv-content");
 
   try {
     const latest = await AIV.api.latest(deviceId);
-    const { reading, scores, explanations } = latest;
-    const keys = ["temperature_c", "humidity_pct", "soil_moisture_pct", "ph", "water_level_cm"];
+
+    const {
+      reading,
+      scores,
+      explanations,
+      crop_requirements
+    } = latest;
+
+    /*
+     * Use the crop requirements returned by the backend.
+     * This keeps Sensor Details synchronized with the active crop.
+     */
+    const rangeMap = {
+      temperature_c: {
+        min: crop_requirements["Temperature Min (°C)"],
+        max: crop_requirements["Temperature Max (°C)"]
+      },
+
+      humidity_pct: {
+        min: crop_requirements["Humidity Min (%)"],
+        max: crop_requirements["Humidity Max (%)"]
+      },
+
+      soil_moisture_pct: {
+        min: crop_requirements["Soil Moisture Min (%)"],
+        max: crop_requirements["Soil Moisture Max (%)"]
+      },
+
+      ph: {
+        min: crop_requirements["pH Min"],
+        max: crop_requirements["pH Max"]
+      },
+
+      water_level_cm: {
+        min: crop_requirements["Water Level Min (cm)"],
+        max: crop_requirements["Water Level Max (cm)"]
+      }
+    };
+
+    const keys = [
+      "temperature_c",
+      "humidity_pct",
+      "soil_moisture_pct",
+      "ph",
+      "water_level_cm"
+    ];
 
     const rows = keys.map((key) => {
       const meta = AIV.SENSOR_META[key];
       const value = reading[key];
       const score = scores[key];
+      const range = rangeMap[key];
+
       const color = AIV.scoreColor(score);
-      const rangeText = meta.range ? `${meta.range[0]} – ${meta.range[1]} ${meta.unit}` : "—";
-      return `<tr>
-        <td>${meta.icon} <strong>${meta.label}</strong></td>
-        <td>${value !== null && value !== undefined ? value + meta.unit : "—"}</td>
-        <td>${rangeText}</td>
-        <td><span style="color:${color}; font-weight:600;">${score !== null && score !== undefined ? score : "—"}/100</span></td>
-      </tr>`;
+
+      let rangeText = "—";
+
+      if (
+        range &&
+        range.min !== undefined &&
+        range.max !== undefined
+      ) {
+        rangeText = `${range.min} – ${range.max}${meta.unit ? " " + meta.unit : ""}`;
+      }
+
+      return `
+        <tr>
+          <td>
+            ${meta.icon}
+            <strong>${meta.label}</strong>
+          </td>
+
+          <td>
+            ${
+              value !== null && value !== undefined
+                ? value + meta.unit
+                : "—"
+            }
+          </td>
+
+          <td>${rangeText}</td>
+
+          <td>
+            <span style="color:${color}; font-weight:600;">
+              ${
+                score !== null && score !== undefined
+                  ? score
+                  : "—"
+              }/100
+            </span>
+          </td>
+        </tr>
+      `;
     }).join("");
 
-    const motionRow = `<tr>
-      <td>🎯 <strong>Motion Sensor</strong></td>
-      <td>${reading.motion_detected ? "Detected" : "Clear"}</td>
-      <td>No motion expected outside farmer activity</td>
-      <td><span class="badge ${reading.motion_detected ? "badge-watch" : "badge-info"}">${reading.motion_detected ? "Check" : "Normal"}</span></td>
-    </tr>`;
+    const motionRow = `
+      <tr>
+        <td>🎯 <strong>Motion Sensor</strong></td>
+
+        <td>
+          ${reading.motion_detected ? "Detected" : "Clear"}
+        </td>
+
+        <td>
+          No motion expected outside farmer activity
+        </td>
+
+        <td>
+          <span class="badge ${
+            reading.motion_detected
+              ? "badge-watch"
+              : "badge-info"
+          }">
+            ${
+              reading.motion_detected
+                ? "Check"
+                : "Normal"
+            }
+          </span>
+        </td>
+      </tr>
+    `;
 
     content.innerHTML = `
       <div class="card" style="margin-bottom:16px;">
-        <table class="sensor-table">
-          <thead><tr><th>Sensor</th><th>Reading</th><th>Ideal range</th><th>Score</th></tr></thead>
-          <tbody>${rows}${motionRow}</tbody>
-        </table>
-      </div>
-      <div class="card">
-        <div class="metric-label" style="margin-bottom:10px;">Full explanation</div>
-        <div class="explain-list">
-          ${explanations.map((e) => `<div class="explain-item"><span class="dot-lead"></span>${e}</div>`).join("")}
+
+        <div class="metric-label" style="margin-bottom:12px;">
+          ${latest.crop || "Active Crop"} requirements
         </div>
+
+        <table class="sensor-table">
+          <thead>
+            <tr>
+              <th>Sensor</th>
+              <th>Reading</th>
+              <th>Ideal range</th>
+              <th>Score</th>
+            </tr>
+          </thead>
+
+          <tbody>
+            ${rows}
+            ${motionRow}
+          </tbody>
+        </table>
+
+      </div>
+
+      <div class="card">
+
+        <div class="metric-label" style="margin-bottom:10px;">
+          Full explanation
+        </div>
+
+        <div class="explain-list">
+          ${
+            explanations
+              .map(
+                (e) => `
+                  <div class="explain-item">
+                    <span class="dot-lead"></span>
+                    ${e}
+                  </div>
+                `
+              )
+              .join("")
+          }
+        </div>
+
       </div>
     `;
+
   } catch (e) {
-    content.innerHTML = AIV.emptyState(`Couldn't load sensor data (${e.message}).`);
+    content.innerHTML =
+      AIV.emptyState(
+        `Couldn't load sensor data (${e.message}).`
+      );
   }
 }
+
 main();
 </script>
+
 </body>
 </html>

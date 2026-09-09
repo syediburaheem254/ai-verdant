@@ -3,110 +3,740 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
 <title>AI Verdant — Dashboard</title>
+
 <link rel="stylesheet" href="css/theme.css">
 <link rel="manifest" href="manifest.json">
+
 <meta name="theme-color" content="#06090a">
 <link rel="apple-touch-icon" href="assets/icon-192.png">
 </head>
+
 <body>
+
 <div class="app-shell">
+
+  <!-- Sidebar -->
   <aside class="sidebar" id="aiv-sidebar"></aside>
+
+  <!-- Main Content -->
   <main class="main">
+
+    <!-- Page Header -->
     <div class="page-header">
-      <div class="eyebrow">Live overview</div>
-      <div class="page-title">Farm Dashboard</div>
-      <p class="page-desc">Real-time snapshot of your field conditions, pulled straight from the sensor node the moment it syncs.</p>
+
+      <div class="eyebrow">
+        Live overview
+      </div>
+
+      <div class="page-title">
+        Farm Dashboard
+      </div>
+
+      <p class="page-desc">
+        Real-time snapshot of your field conditions, pulled straight from
+        the sensor node the moment it syncs.
+      </p>
+
     </div>
 
+    <!-- Dashboard Content -->
     <div id="aiv-content">
-      <div class="card" style="margin-bottom:20px;">Loading latest reading…</div>
+
+      <div class="card" style="margin-bottom:20px;">
+        Loading latest reading…
+      </div>
+
     </div>
 
-    <footer class="page-footer">AI Verdant · connected to <span id="aiv-api-url"></span></footer>
+    <!-- Footer -->
+    <footer class="page-footer">
+      AI Verdant · connected to
+      <span id="aiv-api-url"></span>
+    </footer>
+
   </main>
+
 </div>
+
+
+<!-- ============================================================
+     AI VERDANT JAVASCRIPT
+     ============================================================ -->
 
 <script src="js/api.js"></script>
 <script src="js/ui.js"></script>
+
 <script>
+
 async function main() {
+
+  /*
+   * ------------------------------------------------------------
+   * INITIALIZE SIDEBAR
+   * ------------------------------------------------------------
+   */
+
   await AIV.renderShell();
-  document.getElementById("aiv-api-url").textContent = AIV.API_BASE_URL;
+
+
+  /*
+   * ------------------------------------------------------------
+   * SHOW API URL
+   * ------------------------------------------------------------
+   */
+
+  document.getElementById("aiv-api-url").textContent =
+    AIV.API_BASE_URL;
+
+
+  /*
+   * ------------------------------------------------------------
+   * GET ACTIVE DEVICE
+   * ------------------------------------------------------------
+   */
+
   const deviceId = AIV.getDeviceId();
-  const content = document.getElementById("aiv-content");
+
+  const content =
+    document.getElementById("aiv-content");
+
+
+  /*
+   * ------------------------------------------------------------
+   * LOAD DATA
+   * ------------------------------------------------------------
+   *
+   * The backend provides:
+   *
+   * - crop
+   * - crop_requirements
+   * - reading
+   * - scores
+   * - overall_score
+   * - explanations
+   *
+   * Recommendations are loaded separately.
+   */
 
   try {
+
     const [latest, recs] = await Promise.all([
+
       AIV.api.latest(deviceId),
-      AIV.api.recommendations(deviceId),
+
+      AIV.api.recommendations(deviceId)
+
     ]);
 
-    const { reading, scores, overall_score, explanations } = latest;
-    const metaKeys = ["temperature_c", "humidity_pct", "soil_moisture_pct", "ph", "water_level_cm"];
 
-    const metricCards = metaKeys.map((key) => {
-      const meta = AIV.SENSOR_META[key];
-      const value = reading[key];
-      const score = scores[key];
-      const color = AIV.scoreColor(score);
-      const pct = score === null || score === undefined ? 0 : score;
-      const rangeText = meta.range ? `Ideal ${meta.range[0]}–${meta.range[1]}${meta.unit}` : "";
-      return `
-        <div class="card metric-card glow-green">
-          <div class="metric-label">${meta.icon} ${meta.label}</div>
-          <div class="metric-value">${value !== null && value !== undefined ? value : "—"}<span class="metric-unit">${meta.unit}</span></div>
-          <div class="metric-range">${rangeText}</div>
-          <div class="metric-bar"><div class="metric-bar-fill" style="width:${pct}%; background:${color}"></div></div>
-        </div>`;
-    }).join("");
+    /*
+     * ----------------------------------------------------------
+     * EXTRACT BACKEND DATA
+     * ----------------------------------------------------------
+     */
 
-    const topRecs = recs.slice(0, 3).map((r) => `
-      <div class="rec-row">
-        <div class="rec-body">
-          <div class="rec-msg">${AIV.severityBadge(r.severity)} &nbsp;${r.message}</div>
-          <div class="rec-strategy">${r.strategy}</div>
-        </div>
-      </div>`).join("");
+    const {
+      reading,
+      scores,
+      overall_score,
+      explanations,
+      crop,
+      crop_requirements
+    } = latest;
+
+
+    /*
+     * ----------------------------------------------------------
+     * SENSOR DEFINITIONS
+     * ----------------------------------------------------------
+     *
+     * IMPORTANT:
+     *
+     * The ideal ranges are NOT hard-coded here.
+     *
+     * They come directly from crop_requirements, which itself
+     * comes from the Google Sheets Crops sheet through the
+     * backend.
+     *
+     * Therefore:
+     *
+     * Rice  → Rice ranges
+     * Wheat → Wheat ranges
+     * Tomato → Tomato ranges
+     * etc.
+     */
+
+    const sensorDefinitions = [
+
+      {
+        key: "temperature_c",
+
+        label: "Temperature",
+
+        unit: "°C",
+
+        icon: "🌡",
+
+        min:
+          crop_requirements["Temperature Min (°C)"],
+
+        max:
+          crop_requirements["Temperature Max (°C)"]
+      },
+
+
+      {
+        key: "humidity_pct",
+
+        label: "Humidity",
+
+        unit: "%",
+
+        icon: "💧",
+
+        min:
+          crop_requirements["Humidity Min (%)"],
+
+        max:
+          crop_requirements["Humidity Max (%)"]
+      },
+
+
+      {
+        key: "soil_moisture_pct",
+
+        label: "Soil Moisture",
+
+        unit: "%",
+
+        icon: "🌱",
+
+        min:
+          crop_requirements["Soil Moisture Min (%)"],
+
+        max:
+          crop_requirements["Soil Moisture Max (%)"]
+      },
+
+
+      {
+        key: "ph",
+
+        label: "Soil pH",
+
+        unit: "",
+
+        icon: "⚗",
+
+        min:
+          crop_requirements["pH Min"],
+
+        max:
+          crop_requirements["pH Max"]
+      },
+
+
+      {
+        key: "water_level_cm",
+
+        label: "Water Level",
+
+        unit: "cm",
+
+        icon: "📡",
+
+        min:
+          crop_requirements["Water Level Min (cm)"],
+
+        max:
+          crop_requirements["Water Level Max (cm)"]
+      }
+
+    ];
+
+
+    /*
+     * ----------------------------------------------------------
+     * CREATE SENSOR CARDS
+     * ----------------------------------------------------------
+     */
+
+    const metricCards =
+      sensorDefinitions.map((sensor) => {
+
+        const value =
+          reading[sensor.key];
+
+        const score =
+          scores[sensor.key];
+
+        const color =
+          AIV.scoreColor(score);
+
+
+        /*
+         * Make sure missing values don't break the UI.
+         */
+
+        const hasValue =
+          value !== null &&
+          value !== undefined;
+
+
+        const hasRange =
+          sensor.min !== null &&
+          sensor.min !== undefined &&
+          sensor.max !== null &&
+          sensor.max !== undefined;
+
+
+        /*
+         * Display the crop-specific ideal range.
+         */
+
+        const rangeText =
+          hasRange
+
+            ? `Ideal ${sensor.min}–${sensor.max}${sensor.unit}`
+
+            : "Ideal range unavailable";
+
+
+        /*
+         * Convert score into a 0–100 progress width.
+         */
+
+        const pct =
+          score === null ||
+          score === undefined
+
+            ? 0
+
+            : Math.max(
+                0,
+                Math.min(100, score)
+              );
+
+
+        /*
+         * Return card HTML.
+         */
+
+        return `
+
+          <div class="card metric-card glow-green">
+
+            <div class="metric-label">
+              ${sensor.icon}
+              ${sensor.label}
+            </div>
+
+
+            <div class="metric-value">
+
+              ${hasValue ? value : "—"}
+
+              <span class="metric-unit">
+                ${sensor.unit}
+              </span>
+
+            </div>
+
+
+            <div class="metric-range">
+              ${rangeText}
+            </div>
+
+
+            <div class="metric-bar">
+
+              <div
+                class="metric-bar-fill"
+                style="
+                  width:${pct}%;
+                  background:${color};
+                "
+              ></div>
+
+            </div>
+
+          </div>
+
+        `;
+
+      }).join("");
+
+
+    /*
+     * ----------------------------------------------------------
+     * EXPLANATIONS
+     * ----------------------------------------------------------
+     */
+
+    const explanationHtml =
+      explanations &&
+      explanations.length
+
+        ? explanations
+            .slice(0, 3)
+            .map((explanation) => `
+
+              <div class="explain-item">
+
+                <span class="dot-lead"></span>
+
+                ${explanation}
+
+              </div>
+
+            `)
+            .join("")
+
+        : AIV.emptyState(
+            "No explanations available yet."
+          );
+
+
+    /*
+     * ----------------------------------------------------------
+     * TOP RECOMMENDATIONS
+     * ----------------------------------------------------------
+     */
+
+    const topRecs =
+      recs &&
+      recs.length
+
+        ? recs
+            .slice(0, 3)
+            .map((recommendation) => `
+
+              <div class="rec-row">
+
+                <div class="rec-body">
+
+                  <div class="rec-msg">
+
+                    ${AIV.severityBadge(
+                      recommendation.severity
+                    )}
+
+                    &nbsp;
+
+                    ${recommendation.message}
+
+                  </div>
+
+
+                  <div class="rec-strategy">
+
+                    ${recommendation.strategy}
+
+                  </div>
+
+                </div>
+
+              </div>
+
+            `)
+            .join("")
+
+        : AIV.emptyState(
+            "No recommendations yet."
+          );
+
+
+    /*
+     * ----------------------------------------------------------
+     * BUILD COMPLETE DASHBOARD
+     * ----------------------------------------------------------
+     */
 
     content.innerHTML = `
-      <div class="grid grid-2" style="margin-bottom:16px;">
-        <div class="card glow-cyan">
-          <div class="metric-label" style="margin-bottom:14px;">Overall Condition Score</div>
-          <div class="score-hero">
-            <div class="score-ring" id="aiv-score-ring"></div>
-            <div>
-              <div style="font-size:14.5px; color:var(--text-dim); line-height:1.6;">
-                Last reading: <strong>${AIV.formatTime(reading.timestamp)}</strong><br>
-                ${reading.motion_detected ? "Motion was detected at the last check-in." : "No motion detected at the last check-in."}
-              </div>
+
+      <!-- ======================================================
+           ACTIVE CROP / DEVICE
+           ====================================================== -->
+
+      <div
+        class="card glow-green"
+        style="margin-bottom:16px;"
+      >
+
+        <div
+          style="
+            display:flex;
+            justify-content:space-between;
+            align-items:center;
+            gap:16px;
+            flex-wrap:wrap;
+          "
+        >
+
+          <div>
+
+            <div class="metric-label">
+              ACTIVE CROP
             </div>
+
+
+            <div
+              style="
+                font-size:28px;
+                font-weight:700;
+                margin-top:4px;
+              "
+            >
+              ${crop || "Unknown"}
+            </div>
+
           </div>
-        </div>
-        <div class="card">
-          <div class="metric-label" style="margin-bottom:10px;">What's happening right now</div>
-          <div class="explain-list">
-            ${explanations.slice(0, 3).map((e) => `<div class="explain-item"><span class="dot-lead"></span>${e}</div>`).join("")}
+
+
+          <div
+            style="
+              text-align:right;
+              color:var(--text-dim);
+              font-size:13px;
+            "
+          >
+
+            <div>
+              Device
+            </div>
+
+
+            <strong
+              style="
+                color:var(--text);
+              "
+            >
+              ${deviceId}
+            </strong>
+
           </div>
+
         </div>
+
       </div>
 
-      <div class="grid grid-4" style="margin-bottom:16px;">${metricCards}</div>
+
+      <!-- ======================================================
+           SCORE + CURRENT CONDITIONS
+           ====================================================== -->
+
+      <div
+        class="grid grid-2"
+        style="margin-bottom:16px;"
+      >
+
+
+        <!-- Overall Score -->
+
+        <div class="card glow-cyan">
+
+          <div
+            class="metric-label"
+            style="margin-bottom:14px;"
+          >
+            Overall Condition Score
+          </div>
+
+
+          <div class="score-hero">
+
+
+            <!-- Score Ring -->
+
+            <div
+              class="score-ring"
+              id="aiv-score-ring"
+            ></div>
+
+
+            <!-- Score Information -->
+
+            <div>
+
+              <div
+                style="
+                  font-size:14.5px;
+                  color:var(--text-dim);
+                  line-height:1.6;
+                "
+              >
+
+                Last reading:
+
+                <strong>
+                  ${AIV.formatTime(
+                    reading.timestamp
+                  )}
+                </strong>
+
+                <br>
+
+
+                ${
+                  reading.motion_detected
+
+                    ? "Motion was detected at the last check-in."
+
+                    : "No motion detected at the last check-in."
+                }
+
+              </div>
+
+
+              <!-- Water Requirement -->
+
+              <div
+                style="
+                  margin-top:12px;
+                  font-size:13px;
+                  color:var(--muted);
+                "
+              >
+
+                Water requirement:
+
+                <strong>
+                  ${
+                    crop_requirements[
+                      "Water Requirement"
+                    ] || "—"
+                  }
+                </strong>
+
+              </div>
+
+            </div>
+
+          </div>
+
+        </div>
+
+
+        <!-- Current Conditions -->
+
+        <div class="card">
+
+          <div
+            class="metric-label"
+            style="margin-bottom:10px;"
+          >
+            What's happening right now
+          </div>
+
+
+          <div class="explain-list">
+
+            ${explanationHtml}
+
+          </div>
+
+        </div>
+
+
+      </div>
+
+
+      <!-- ======================================================
+           SENSOR READINGS
+           ====================================================== -->
+
+      <div
+        class="grid grid-4"
+        style="margin-bottom:16px;"
+      >
+
+        ${metricCards}
+
+      </div>
+
+
+      <!-- ======================================================
+           TOP RECOMMENDATIONS
+           ====================================================== -->
 
       <div class="card">
-        <div class="metric-label" style="margin-bottom:6px;">Top recommendations</div>
-        ${topRecs || AIV.emptyState("No recommendations yet.")}
-        <div style="margin-top:14px;"><a href="strategy.html${window.location.search}" class="btn btn-primary">View full strategy →</a></div>
+
+        <div
+          class="metric-label"
+          style="margin-bottom:6px;"
+        >
+          Top recommendations
+        </div>
+
+
+        ${topRecs}
+
+
+        <!-- Strategy Button -->
+
+        <div style="margin-top:14px;">
+
+          <a
+            href="strategy.html${window.location.search}"
+            class="btn btn-primary"
+          >
+            View full strategy →
+          </a>
+
+        </div>
+
       </div>
+
     `;
-    AIV.renderScoreRing("aiv-score-ring", overall_score);
-  } catch (e) {
-    content.innerHTML = AIV.emptyState(
-      `Couldn't load data for "${deviceId}" (${e.message}). Make sure the backend is running and the API URL in Settings is correct, and that the sensor box has sent at least one reading.`
+
+
+    /*
+     * ----------------------------------------------------------
+     * RENDER SCORE RING
+     * ----------------------------------------------------------
+     */
+
+    AIV.renderScoreRing(
+      "aiv-score-ring",
+      overall_score
     );
+
+
+  } catch (e) {
+
+
+    /*
+     * ----------------------------------------------------------
+     * ERROR STATE
+     * ----------------------------------------------------------
+     */
+
+    content.innerHTML =
+      AIV.emptyState(
+
+        `Couldn't load data for "${deviceId}" (${e.message}).
+        Make sure the backend is running and the API URL in
+        Settings is correct, and that the sensor box has sent
+        at least one reading.`
+
+      );
+
   }
+
 }
+
+
+/*
+ * --------------------------------------------------------------
+ * START DASHBOARD
+ * --------------------------------------------------------------
+ */
+
 main();
+
 </script>
+
 </body>
 </html>

@@ -4,9 +4,9 @@
    localhost:5000 for local development.
    ========================================================================== */
 
-const AIV = window.AIV || {};
+var AIV = window.AIV || {};
 
-AIV.API_BASE_URL = localStorage.getItem("aiv_api_base") || "http://localhost:5000";
+AIV.API_BASE_URL = localStorage.getItem("aiv_api_base") || "https://ai-verdant.onrender.com";
 
 AIV.setApiBase = (url) => {
   localStorage.setItem("aiv_api_base", url);
